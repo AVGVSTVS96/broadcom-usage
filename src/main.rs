@@ -11,6 +11,9 @@ use broadcom_usage::server;
 use broadcom_usage::store::Store;
 use broadcom_usage::deck::Deck;
 
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 const USAGE: &str = "broadcom-usage [serve|dump <out.ndjson>] [--config <file.json>]";
 
 fn main() -> Result<()> {

@@ -52,7 +52,7 @@ pub struct Deck {
     state: Mutex<State>,
     readings: Mutex<AppendLog<LimitReading>>,
     bindings: Mutex<AppendLog<Binding>>,
-    loaders: HashMap<Range, tokio::sync::Mutex<()>>,
+    loader: tokio::sync::Mutex<()>,
     past: Mutex<Option<Past>>,
 }
 
@@ -76,16 +76,18 @@ impl Deck {
     pub fn new(config: Config, store: Arc<Store>) -> Self {
         let zone = config.timezone.as_deref().and_then(|z| z.parse().ok()).unwrap_or_else(local_zone);
         let readings = AppendLog::new(config.pool_dir.join("usage-history.ndjson"), views::parse_reading);
+        let mut ranges: HashMap<Range, RangeCache> = HashMap::new();
+        ranges.entry(Range::Week).or_default().viewed = Some(Instant::now());
         let bindings = AppendLog::new(config.pool_dir.join("attribution.ndjson"), views::parse_binding);
         Self {
             config,
             zone,
             store,
             stream: Stream::default(),
-            state: Mutex::default(),
+            state: Mutex::new(State { ranges, ..Default::default() }),
             readings: Mutex::new(readings),
             bindings: Mutex::new(bindings),
-            loaders: Range::ALL.into_iter().map(|r| (r, tokio::sync::Mutex::new(()))).collect(),
+            loader: tokio::sync::Mutex::new(()),
             past: Mutex::new(None),
         }
     }
@@ -98,48 +100,66 @@ impl Deck {
         self.bindings.lock().unwrap().read().0.to_vec()
     }
 
-    /// Computes one range's session usage from the span of records it reads.
-    fn load(&self, r: Range) -> Result<SessionUsage> {
+    /// Computes these ranges' session usage from one read of the span they need.
+    fn load(&self, ranges: &[Range]) -> Result<Vec<SessionUsage>> {
         let now = now_millis();
         let readings = self.readings();
         let bindings = self.bindings();
-        let from = views::reads_from(r, self.zone, now, &readings).min(views::pricing_from(r, self.zone, now));
+        let from = ranges
+            .iter()
+            .map(|&r| views::reads_from(r, self.zone, now, &readings).min(views::pricing_from(r, self.zone, now)))
+            .fold(f64::INFINITY, f64::min);
         let events = self.store.events_since(if from.is_finite() { from as i64 } else { 0 })?;
         let prepared = views::prepare(&events);
         let plans = views::read_plans(Some(&self.config.accounts_file), Some(&self.config.pool_dir), &self.config.plans);
         let pricing = PlanPricing::new(&plans, &prepared, self.zone, now);
         let limits = LimitInputs::new(&readings, &bindings, self.config.agent_sdk());
         let devices = self.store.devices()?;
-        Ok(views::session_usage(&prepared, r, self.zone, now, Some(&pricing), Some(&limits), &devices))
+        Ok(ranges
+            .iter()
+            .map(|&r| views::session_usage(&prepared, r, self.zone, now, Some(&pricing), Some(&limits), &devices))
+            .collect())
     }
 
-    /// Reloads a range, one load at a time; listeners hear only when its sessions or
-    /// limit windows changed, since every load moves the clock fields.
-    pub async fn warm(self: &Arc<Self>, r: Range) -> Result<()> {
+    /// Reloads ranges, one load at a time; listeners hear only when a range's sessions
+    /// or limit windows changed, since every load moves the clock fields.
+    pub async fn warm(self: &Arc<Self>, ranges: Vec<Range>) -> Result<()> {
         let started = Instant::now();
-        let _loading = self.loaders[&r].lock().await;
-        if self.state.lock().unwrap().ranges.get(&r).and_then(|c| c.at).is_some_and(|at| at >= started) {
+        let _loading = self.loader.lock().await;
+        let ranges: Vec<Range> = {
+            let state = self.state.lock().unwrap();
+            ranges
+                .into_iter()
+                .filter(|r| state.ranges.get(r).and_then(|c| c.at).is_none_or(|at| at < started))
+                .collect()
+        };
+        if ranges.is_empty() {
             return Ok(());
         }
         let deck = self.clone();
-        let value = tokio::task::spawn_blocking(move || deck.load(r)).await??;
-        let news = hash_json(&(&value.sessions, &value.windows));
-        let changed = {
-            let mut state = self.state.lock().unwrap();
-            let cache = state.ranges.entry(r).or_default();
-            let changed = cache.news != news;
-            cache.value = Some(Arc::new(value));
-            cache.news = news;
-            cache.at = Some(Instant::now());
-            if changed {
-                cache.views.clear();
-            }
-            changed
-        };
-        if changed {
-            if matches!(r, Range::Week | Range::Today) {
+        let loading = ranges.clone();
+        let values = tokio::task::spawn_blocking(move || deck.load(&loading)).await??;
+        let mut stale = false;
+        for (r, value) in ranges.into_iter().zip(values) {
+            let news = hash_json(&(&value.sessions, &value.windows));
+            let changed = {
+                let mut state = self.state.lock().unwrap();
+                let cache = state.ranges.entry(r).or_default();
+                let changed = cache.news != news;
+                cache.value = Some(Arc::new(value));
+                cache.news = news;
+                cache.at = Some(Instant::now());
+                if changed {
+                    cache.views.clear();
+                }
+                changed
+            };
+            if changed && matches!(r, Range::Week | Range::Today) {
                 self.publish();
             }
+            stale |= changed;
+        }
+        if stale {
             self.stream.stale(&["usage"]);
         }
         Ok(())
@@ -158,11 +178,11 @@ impl Deck {
             if let Some(value) = value {
                 if at.is_none_or(|at| at.elapsed() > FRESH_FOR) {
                     let deck = self.clone();
-                    tokio::spawn(async move { deck.warm(r).await });
+                    tokio::spawn(async move { deck.warm(vec![r]).await });
                 }
                 return Ok(value);
             }
-            self.warm(r).await?;
+            self.warm(vec![r]).await?;
         }
     }
 
@@ -267,11 +287,11 @@ impl Deck {
             let deck = self.clone();
             tokio::spawn(async move { deck.refresh_credits().await });
         }
-        for r in due {
+        if !due.is_empty() {
             let deck = self.clone();
             tokio::spawn(async move {
-                if let Err(e) = deck.warm(r).await {
-                    tracing::warn!("loading {}: {e:#}", r.as_str());
+                if let Err(e) = deck.warm(due).await {
+                    tracing::warn!("loading usage: {e:#}");
                 }
             });
         }

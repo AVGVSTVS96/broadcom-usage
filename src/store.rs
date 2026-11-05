@@ -7,7 +7,7 @@
 //! upstream response or request is hidden, and the receipt takes its project, title,
 //! thread and device from its session's latest transcript record.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -73,7 +73,8 @@ CREATE TABLE IF NOT EXISTS events (
   hidden INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (harness, id)
 );
-CREATE INDEX IF NOT EXISTS events_time ON events (millis) WHERE hidden = 0;
+CREATE INDEX IF NOT EXISTS events_order ON events (ts, id) WHERE hidden = 0;
+DROP INDEX IF EXISTS events_time;
 CREATE INDEX IF NOT EXISTS events_session ON events (harness, session_id, ts);
 CREATE INDEX IF NOT EXISTS events_response ON events (harness, response_key) WHERE response_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS events_request ON events (harness, request_key, model) WHERE request_key IS NOT NULL;
@@ -251,21 +252,21 @@ impl Store {
         let tx = db.transaction()?;
         tx.execute("DELETE FROM events", [])?;
         let resolver = Resolver::new(&tx, &self.local.id, &policy);
-        let winners: Vec<String> = tx
-            .prepare(
-                "SELECT event FROM (SELECT event, row_number() OVER (PARTITION BY harness, id \
-                 ORDER BY total DESC, device = ?1 DESC, device ASC) AS rank FROM records) WHERE rank = 1",
-            )?
-            .query_map([&self.local.id], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?;
+        let mut winners = tx.prepare(
+            "SELECT event FROM (SELECT event, row_number() OVER (PARTITION BY harness, id \
+             ORDER BY total DESC, device = ?1 DESC, device ASC) AS rank FROM records) WHERE rank = 1",
+        )?;
+        let mut rows = winners.query([&self.local.id])?;
         let mut proxies = Vec::new();
-        for text in winners {
-            let e: Event = serde_json::from_str(&text)?;
+        while let Some(row) = rows.next()? {
+            let e: Event = serde_json::from_str(row.get_ref(0)?.as_str()?)?;
             resolver.insert(&e)?;
             if e.is_proxy() {
                 proxies.push((e.harness, e.id));
             }
         }
+        drop(rows);
+        drop(winners);
         tracing::info!("resolved {} records", proxies.len());
         tx.execute(&format!("UPDATE events SET hidden = {HAS_RECEIPT} WHERE source <> 'proxy'"), [])?;
         tracing::info!("hid transcript records the proxy answered for");
@@ -305,15 +306,66 @@ impl Store {
         Ok(changed)
     }
 
-    /// Resolved records from `since` (unix ms) on, sorted by timestamp and id, as the views read them.
+    /// Resolved records from `since` (unix ms) on, in timestamp and id order, as the views read them.
+    pub fn rows_since(&self, since: i64) -> Result<Vec<crate::views::Row>> {
+        let db = self.read.lock().unwrap();
+        let mut strings: HashMap<String, Arc<str>> = HashMap::new();
+        let mut intern = |r: &rusqlite::Row, i: usize| -> rusqlite::Result<Arc<str>> {
+            let text = r.get_ref(i)?.as_str()?;
+            Ok(match strings.get(text) {
+                Some(s) => s.clone(),
+                None => {
+                    let s: Arc<str> = Arc::from(text);
+                    strings.insert(text.to_string(), s.clone());
+                    s
+                }
+            })
+        };
+        let mut statement = db.prepare_cached(
+            "SELECT millis, source = 'proxy', failed, cost_known, cost_usd, harness, model, project, repository, session_id, \
+             device_id, session_title, entrypoint, account_id, input, output, cache_read, cache_write, unclassified, \
+             reasoning, requests FROM events WHERE hidden = 0 AND millis >= ?1 ORDER BY ts, id",
+        )?;
+        let mut rows = statement.query([since])?;
+        let mut out = Vec::new();
+        while let Some(r) = rows.next()? {
+            out.push(crate::views::Row {
+                millis: r.get::<_, i64>(0)? as f64,
+                proxy: r.get(1)?,
+                failed: r.get(2)?,
+                cost_known: r.get(3)?,
+                cost_usd: r.get(4)?,
+                harness: intern(r, 5)?,
+                model: intern(r, 6)?,
+                project: intern(r, 7)?,
+                repository: match r.get_ref(8)? {
+                    rusqlite::types::ValueRef::Null => None,
+                    _ => Some(intern(r, 8)?),
+                },
+                session_id: intern(r, 9)?,
+                device_id: intern(r, 10)?,
+                session_title: intern(r, 11)?,
+                entrypoint: intern(r, 12)?,
+                account_id: intern(r, 13)?,
+                input_tokens: r.get(14)?,
+                output_tokens: r.get(15)?,
+                cache_read_tokens: r.get(16)?,
+                cache_write_tokens: r.get(17)?,
+                unclassified_tokens: r.get(18)?,
+                reasoning_tokens: r.get(19)?,
+                requests: r.get(20)?,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Resolved records from `since` (unix ms) on, sorted by timestamp and id.
     pub fn events_since(&self, since: i64) -> Result<Vec<Event>> {
         let db = self.read.lock().unwrap();
-        let mut events: Vec<Event> = db
-            .prepare_cached(&format!("SELECT {COLUMNS} FROM events WHERE hidden = 0 AND millis >= ?1"))?
+        Ok(db
+            .prepare_cached(&format!("SELECT {COLUMNS} FROM events WHERE hidden = 0 AND millis >= ?1 ORDER BY ts, id"))?
             .query_map([since], read_event)?
-            .collect::<rusqlite::Result<_>>()?;
-        events.sort_unstable_by(|a, b| a.timestamp.cmp(&b.timestamp).then_with(|| a.id.cmp(&b.id)));
-        Ok(events)
+            .collect::<rusqlite::Result<_>>()?)
     }
 
     /// Every resolved record, sorted, as Go's `Store.Events()` returns them.

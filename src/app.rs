@@ -80,7 +80,6 @@ pub fn start(app: Arc<App>) {
         let store = app.store.clone();
         tokio::spawn(github.run(move |batch| tokio::task::block_in_place(|| store.apply(&batch, true).map(|_| ()))));
     }
-    tokio::spawn(follow_files(app.clone()));
     tokio::spawn({
         let deck = deck.clone();
         let mut revision = app.store.subscribe();
@@ -130,10 +129,15 @@ pub fn start(app: Arc<App>) {
         }
     });
     tokio::spawn(async move {
+        let first = app.clone();
+        if let Ok(Err(e)) = tokio::task::spawn_blocking(move || first.catch_up()).await {
+            tracing::warn!("following files: {e:#}");
+        }
+        tokio::spawn(follow_files(app));
         let names = deck.clone();
         let _ = tokio::task::spawn_blocking(move || names.refresh_names()).await;
         deck.publish();
-        if let Err(e) = deck.warm(Range::Week).await {
+        if let Err(e) = deck.warm(vec![Range::Week]).await {
             tracing::warn!("loading 7d: {e:#}");
         }
     });
