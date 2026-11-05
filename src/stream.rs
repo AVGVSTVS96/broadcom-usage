@@ -61,7 +61,11 @@ impl Stream {
         let mut changed = Vec::new();
         let mut patch = Live::new();
         for (key, value) in entries {
-            if state.live.get(&key).is_none_or(|previous| previous.get() != value.get()) {
+            if state
+                .live
+                .get(&key)
+                .is_none_or(|previous| previous.get() != value.get())
+            {
                 changed.push(key.clone());
                 patch.insert(key.clone(), value.clone());
             }
@@ -93,7 +97,10 @@ impl Stream {
         if tags.is_empty() {
             return;
         }
-        let message = format!("data: {}\n\n", serde_json::json!({"type": "stale", "tags": tags}));
+        let message = format!(
+            "data: {}\n\n",
+            serde_json::json!({"type": "stale", "tags": tags})
+        );
         send(&mut self.state.lock().unwrap(), message);
     }
 
@@ -104,7 +111,9 @@ impl Stream {
 
 /// Drops a client too slow to keep up; its tab reconnects and takes a fresh snapshot.
 fn send(state: &mut State, message: String) {
-    state.clients.retain(|client| client.try_send(message.clone()).is_ok());
+    state
+        .clients
+        .retain(|client| client.try_send(message.clone()).is_ok());
 }
 
 #[cfg(test)]
@@ -118,7 +127,10 @@ mod tests {
     #[tokio::test]
     async fn sends_snapshot_then_changed_keys_only() {
         let stream = Stream::default();
-        stream.publish(vec![("s:a".into(), raw(r#"{"state":"idle"}"#)), ("app:x".into(), raw("1"))]);
+        stream.publish(vec![
+            ("s:a".into(), raw(r#"{"state":"idle"}"#)),
+            ("app:x".into(), raw("1")),
+        ]);
         let mut client = stream.subscribe();
         assert_eq!(
             client.recv().await.unwrap(),
@@ -131,6 +143,9 @@ mod tests {
         );
         stream.publish(vec![("s:a".into(), raw(r#"{"state":"working"}"#))]);
         stream.stale(&["usage"]);
-        assert_eq!(client.recv().await.unwrap(), "data: {\"type\":\"stale\",\"tags\":[\"usage\"]}\n\n");
+        assert_eq!(
+            client.recv().await.unwrap(),
+            "data: {\"type\":\"stale\",\"tags\":[\"usage\"]}\n\n"
+        );
     }
 }

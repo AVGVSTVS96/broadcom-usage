@@ -42,7 +42,10 @@ enum Change {
 
 fn parse(line: &[u8], format: Format) -> Option<Change> {
     match format {
-        Format::Receipts => serde_json::from_slice::<Event>(line).ok().filter(|e| !e.id.is_empty()).map(Change::Put),
+        Format::Receipts => serde_json::from_slice::<Event>(line)
+            .ok()
+            .filter(|e| !e.id.is_empty())
+            .map(Change::Put),
         Format::Journal => match serde_json::from_slice::<JournalLine>(line).ok()? {
             JournalLine { e: Some(e), .. } => Some(Change::Put(e)),
             JournalLine { d: Some(id), .. } if !id.is_empty() => Some(Change::Withdraw(id)),
@@ -56,7 +59,9 @@ fn parse(line: &[u8], format: Format) -> Option<Change> {
 /// Returns how many lines were read.
 pub fn catch_up(store: &Store, followed: &Followed, bulk: bool) -> Result<usize> {
     let key = followed.path.to_string_lossy().into_owned();
-    let Ok(mut file) = File::open(&followed.path) else { return Ok(0) };
+    let Ok(mut file) = File::open(&followed.path) else {
+        return Ok(0);
+    };
     let meta = file.metadata()?;
     let (inode, mut offset) = match store.cursor(&key)? {
         Some((inode, offset)) if inode == meta.ino() && offset <= meta.len() => (inode, offset),
@@ -75,15 +80,22 @@ pub fn catch_up(store: &Store, followed: &Followed, bulk: bool) -> Result<usize>
             break;
         }
         carry.extend_from_slice(&chunk[..n]);
-        let Some(end) = carry.iter().rposition(|&b| b == b'\n') else { continue };
-        let changes: Vec<Change> =
-            carry[..end].split(|&b| b == b'\n').filter_map(|line| parse(line, followed.format)).collect();
+        let Some(end) = carry.iter().rposition(|&b| b == b'\n') else {
+            continue;
+        };
+        let changes: Vec<Change> = carry[..end]
+            .split(|&b| b == b'\n')
+            .filter_map(|line| parse(line, followed.format))
+            .collect();
         read += changes.len();
         if bulk {
-            store.load(&followed.device, changes.into_iter().filter_map(|c| match c {
-                Change::Put(e) => Some(e),
-                Change::Withdraw(_) => None,
-            }))?;
+            store.load(
+                &followed.device,
+                changes.into_iter().filter_map(|c| match c {
+                    Change::Put(e) => Some(e),
+                    Change::Withdraw(_) => None,
+                }),
+            )?;
         } else {
             apply_in_order(store, &followed.device, changes)?;
         }
@@ -96,7 +108,10 @@ pub fn catch_up(store: &Store, followed: &Followed, bulk: bool) -> Result<usize>
 
 /// Applies upserts and withdrawals in file order, a run of one kind at a time.
 fn apply_in_order(store: &Store, device: &Device, changes: Vec<Change>) -> Result<()> {
-    let mut batch = Batch { device: device.clone(), ..Default::default() };
+    let mut batch = Batch {
+        device: device.clone(),
+        ..Default::default()
+    };
     for change in changes {
         match change {
             Change::Put(e) => {
@@ -134,9 +149,15 @@ pub fn go_journals(dir: &Path, local: &Device) -> Vec<Followed> {
     devices
         .into_iter()
         .map(|device| {
-            let device = if device.id == local.id { local.clone() } else { device };
+            let device = if device.id == local.id {
+                local.clone()
+            } else {
+                device
+            };
             Followed {
-                path: dir.join("events").join(format!("{}.ndjson", path_escape(&device.id))),
+                path: dir
+                    .join("events")
+                    .join(format!("{}.ndjson", path_escape(&device.id))),
                 device,
                 format: Format::Journal,
             }
@@ -148,9 +169,19 @@ pub fn go_journals(dir: &Path, local: &Device) -> Vec<Followed> {
 fn path_escape(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b':' | b'@' | b'&' | b'=' | b'+' | b'$' => {
-                (b as char).to_string()
-            }
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'.'
+            | b'_'
+            | b'~'
+            | b':'
+            | b'@'
+            | b'&'
+            | b'='
+            | b'+'
+            | b'$' => (b as char).to_string(),
             _ => format!("%{b:02X}"),
         })
         .collect()

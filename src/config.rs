@@ -41,7 +41,9 @@ pub struct Config {
 }
 
 fn home() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default()
 }
 
 pub fn expand(path: &Path) -> PathBuf {
@@ -78,9 +80,12 @@ impl Default for Config {
 
 impl Config {
     pub fn load(path: Option<&Path>) -> Result<Self> {
-        let Some(path) = path else { return Ok(Self::default()) };
+        let Some(path) = path else {
+            return Ok(Self::default());
+        };
         let text = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-        let mut config: Self = serde_json::from_slice(&text).with_context(|| format!("parsing {}", path.display()))?;
+        let mut config: Self =
+            serde_json::from_slice(&text).with_context(|| format!("parsing {}", path.display()))?;
         for p in [
             &mut config.state_dir,
             &mut config.key_file,
@@ -91,19 +96,30 @@ impl Config {
         ] {
             *p = expand(p);
         }
-        for p in [&mut config.go_usage_dir, &mut config.receipts].into_iter().flatten() {
+        for p in [&mut config.go_usage_dir, &mut config.receipts]
+            .into_iter()
+            .flatten()
+        {
             *p = expand(p);
         }
         Ok(config)
     }
 
     pub fn agent_sdk(&self) -> AgentSdk {
-        AgentSdk { factor: self.agent_sdk_factor, entrypoints: self.agent_sdk_entrypoints.clone() }
+        AgentSdk {
+            factor: self.agent_sdk_factor,
+            entrypoints: self.agent_sdk_entrypoints.clone(),
+        }
     }
 
     /// This machine's device id: configured, else saved in the state folder once.
     pub fn device_id(&self) -> Result<String> {
-        if let Some(id) = self.device_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(id) = self
+            .device_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             return Ok(id.to_string());
         }
         let path = self.state_dir.join("device-id");
@@ -119,7 +135,9 @@ impl Config {
 
     pub fn device_label(&self) -> String {
         self.device_label.clone().unwrap_or_else(|| {
-            std::fs::read_to_string("/etc/hostname").map(|h| h.trim().to_string()).unwrap_or_else(|_| "server".into())
+            std::fs::read_to_string("/etc/hostname")
+                .map(|h| h.trim().to_string())
+                .unwrap_or_else(|_| "server".into())
         })
     }
 }
@@ -127,7 +145,12 @@ impl Config {
 fn rand_u128() -> u128 {
     use std::hash::{BuildHasher, Hasher};
     let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-    h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+    h.write_u128(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+    );
     let a = h.finish() as u128;
     let mut h2 = std::collections::hash_map::RandomState::new().build_hasher();
     h2.write_u64(a as u64);

@@ -14,8 +14,10 @@ use sha2::{Digest, Sha256};
 
 use crate::event::Event;
 
-const SOURCE: &str = "https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json";
-const DOWNLOAD: &str = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
+const SOURCE: &str =
+    "https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json";
+const DOWNLOAD: &str =
+    "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
 const FILE: &str = "pricing-state.json";
 const REFRESH_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -44,7 +46,11 @@ pub struct RuleRates {
     pub cache_read_per_million: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_write_per_million: Option<f64>,
-    #[serde(default, rename = "cacheWrite1hPerMillion", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "cacheWrite1hPerMillion",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub cache_write_1h_per_million: Option<f64>,
 }
 
@@ -99,7 +105,8 @@ pub struct Policy {
 }
 
 static BUNDLED: LazyLock<Catalog> = LazyLock::new(|| {
-    serde_json::from_str(include_str!("pricing.json")).expect("the bundled pricing.json is a catalog")
+    serde_json::from_str(include_str!("pricing.json"))
+        .expect("the bundled pricing.json is a catalog")
 });
 
 const COST_FIELDS: [&str; 5] = [
@@ -115,17 +122,29 @@ impl Policy {
         let revision = revision(&catalog, &rules);
         let mut ruled = HashMap::with_capacity(rules.len());
         for rule in &rules {
-            ruled.entry(rule.model.clone()).or_insert_with(|| match (rule.kind, &rule.rates) {
-                (RuleKind::Alias, _) => Ruled::Alias(rule.target.clone()),
-                (RuleKind::Free, _) => Ruled::Free,
-                (RuleKind::Rates, Some(rates)) => Ruled::Custom {
-                    name: if rule.nickname.is_empty() { &rule.model } else { &rule.nickname }.clone(),
-                    rates: custom_rates(rates),
-                },
-                (RuleKind::Rates, None) => Ruled::Catalog,
-            });
+            ruled
+                .entry(rule.model.clone())
+                .or_insert_with(|| match (rule.kind, &rule.rates) {
+                    (RuleKind::Alias, _) => Ruled::Alias(rule.target.clone()),
+                    (RuleKind::Free, _) => Ruled::Free,
+                    (RuleKind::Rates, Some(rates)) => Ruled::Custom {
+                        name: if rule.nickname.is_empty() {
+                            &rule.model
+                        } else {
+                            &rule.nickname
+                        }
+                        .clone(),
+                        rates: custom_rates(rates),
+                    },
+                    (RuleKind::Rates, None) => Ruled::Catalog,
+                });
         }
-        Policy { catalog, rules, revision, ruled }
+        Policy {
+            catalog,
+            rules,
+            revision,
+            ruled,
+        }
     }
 
     /// The bundled LiteLLM catalog with no rules.
@@ -154,7 +173,15 @@ impl Policy {
         let model = resolved.map_or(raw, |r| r.model);
         let (cost, known) = if self.uses_reported_grok_cost(e) {
             reported_grok_cost(e)
-        } else if has_pricing_metadata(e, resolved) || matches!(resolved, Some(Resolved { price: Price::Free, .. })) {
+        } else if has_pricing_metadata(e, resolved)
+            || matches!(
+                resolved,
+                Some(Resolved {
+                    price: Price::Free,
+                    ..
+                })
+            )
+        {
             let tier = e.service_tier.as_deref().unwrap_or("");
             estimate(e, e.cache_write_1h_tokens.unwrap_or(0), tier, resolved)
         } else {
@@ -163,7 +190,13 @@ impl Policy {
         if e.raw_model == raw && e.model == model && e.cost_usd == cost && e.cost_known == known {
             return None;
         }
-        Some(Event { raw_model: raw.to_string(), model: model.to_string(), cost_usd: cost, cost_known: known, ..e.clone() })
+        Some(Event {
+            raw_model: raw.to_string(),
+            model: model.to_string(),
+            cost_usd: cost,
+            cost_known: known,
+            ..e.clone()
+        })
     }
 
     /// Why these rules can't be saved together, if they can't.
@@ -177,10 +210,16 @@ impl Policy {
                     RuleKind::Free => true,
                     RuleKind::Rates => rule.rates.as_ref().is_some_and(|r| {
                         (rule.nickname.is_empty() || name(&rule.nickname))
-                            && [Some(r.input_per_million), Some(r.output_per_million)].into_iter().all(rate)
-                            && [r.cache_read_per_million, r.cache_write_per_million, r.cache_write_1h_per_million]
+                            && [Some(r.input_per_million), Some(r.output_per_million)]
                                 .into_iter()
                                 .all(rate)
+                            && [
+                                r.cache_read_per_million,
+                                r.cache_write_per_million,
+                                r.cache_write_1h_per_million,
+                            ]
+                            .into_iter()
+                            .all(rate)
                     }),
                 };
             if !ok {
@@ -195,13 +234,19 @@ impl Policy {
             let mut current = rule.model.as_str();
             while let Some(Ruled::Alias(target)) = self.ruled.get(current) {
                 if seen.contains(&current) {
-                    return Some(format!("The alias for {} would create a cycle.", rule.model));
+                    return Some(format!(
+                        "The alias for {} would create a cycle.",
+                        rule.model
+                    ));
                 }
                 seen.push(current);
                 current = target;
             }
             if self.resolve(&rule.model).is_none() {
-                return Some(format!("The alias target for {} has no known catalog or custom pricing.", rule.model));
+                return Some(format!(
+                    "The alias target for {} has no known catalog or custom pricing.",
+                    rule.model
+                ));
             }
         }
         None
@@ -220,11 +265,18 @@ impl Policy {
                     current = target;
                     continue;
                 }
-                Some(Ruled::Free) => Some(Resolved { model: current, price: Price::Free }),
-                Some(Ruled::Custom { name, rates }) => Some(Resolved { model: name, price: Price::Custom(rates) }),
-                None | Some(Ruled::Catalog) => {
-                    self.catalog_price(current).map(|rates| Resolved { model: current, price: Price::Catalog(rates) })
-                }
+                Some(Ruled::Free) => Some(Resolved {
+                    model: current,
+                    price: Price::Free,
+                }),
+                Some(Ruled::Custom { name, rates }) => Some(Resolved {
+                    model: name,
+                    price: Price::Custom(rates),
+                }),
+                None | Some(Ruled::Catalog) => self.catalog_price(current).map(|rates| Resolved {
+                    model: current,
+                    price: Price::Catalog(rates),
+                }),
             };
         }
     }
@@ -243,7 +295,9 @@ impl Policy {
             }
         }
         let b = model.as_bytes();
-        let dated = b.len() > 9 && b[b.len() - 8..].iter().all(u8::is_ascii_digit) && b[b.len() - 9] == b'-';
+        let dated = b.len() > 9
+            && b[b.len() - 8..].iter().all(u8::is_ascii_digit)
+            && b[b.len() - 9] == b'-';
         if model.starts_with("claude-") && dated {
             return models.get(&model[..model.len() - 9]);
         }
@@ -256,7 +310,11 @@ impl Policy {
 }
 
 fn raw_model(e: &Event) -> &str {
-    if e.raw_model.is_empty() { &e.model } else { &e.raw_model }
+    if e.raw_model.is_empty() {
+        &e.model
+    } else {
+        &e.raw_model
+    }
 }
 
 fn reported_grok_cost(e: &Event) -> (f64, bool) {
@@ -267,7 +325,13 @@ fn reported_grok_cost(e: &Event) -> (f64, bool) {
 }
 
 fn has_pricing_metadata(e: &Event, resolved: Option<Resolved>) -> bool {
-    let custom = matches!(resolved, Some(Resolved { price: Price::Custom(_), .. }));
+    let custom = matches!(
+        resolved,
+        Some(Resolved {
+            price: Price::Custom(_),
+            ..
+        })
+    );
     e.unclassified_tokens == 0
         && (custom || e.service_tier.is_some())
         && (e.cache_write_tokens == 0 || e.cache_write_1h_tokens.is_some())
@@ -302,8 +366,14 @@ fn tier_suffix(tier: &str) -> Option<&'static str> {
 fn js_space(c: char) -> bool {
     matches!(
         c,
-        '\t' | '\n' | '\u{b}' | '\u{c}' | '\r' | ' ' | '\u{85}' | '\u{a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}'
-            | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}'
+        '\t' | '\n' | '\u{b}' | '\u{c}' | '\r' | ' ' | '\u{85}' | '\u{a0}' | '\u{1680}' | '\u{2000}'
+            ..='\u{200a}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{202f}'
+                | '\u{205f}'
+                | '\u{3000}'
+                | '\u{feff}'
     )
 }
 
@@ -312,7 +382,13 @@ fn rates_for(rates: &Rates, context: &str, tier: &str) -> [Option<f64>; 5] {
     COST_FIELDS.map(|field| {
         rates
             .get(&format!("{field}{context}{tier}"))
-            .or_else(|| if context.is_empty() { None } else { rates.get(&format!("{field}{tier}")) })
+            .or_else(|| {
+                if context.is_empty() {
+                    None
+                } else {
+                    rates.get(&format!("{field}{tier}"))
+                }
+            })
             .copied()
             .filter(|rate| rate.is_finite() && *rate >= 0.0)
     })
@@ -329,12 +405,29 @@ fn estimate(e: &Event, cache_write_1h: i64, tier: &str, resolved: Option<Resolve
         },
     };
     let write_1h = cache_write_1h.max(0).min(e.cache_write_tokens);
-    let tokens = [e.input_tokens, e.output_tokens, e.cache_read_tokens, e.cache_write_tokens - write_1h, write_1h];
-    if tokens.iter().zip(rates).any(|(&n, rate)| n > 0 && rate.is_none()) {
+    let tokens = [
+        e.input_tokens,
+        e.output_tokens,
+        e.cache_read_tokens,
+        e.cache_write_tokens - write_1h,
+        write_1h,
+    ];
+    if tokens
+        .iter()
+        .zip(rates)
+        .any(|(&n, rate)| n > 0 && rate.is_none())
+    {
         return (0.0, false);
     }
-    let cost = tokens.iter().zip(rates).fold(0.0, |sum, (&n, rate)| sum + n as f64 * rate.unwrap_or(0.0));
-    if cost.is_finite() { (cost, true) } else { (0.0, false) }
+    let cost = tokens
+        .iter()
+        .zip(rates)
+        .fold(0.0, |sum, (&n, rate)| sum + n as f64 * rate.unwrap_or(0.0));
+    if cost.is_finite() {
+        (cost, true)
+    } else {
+        (0.0, false)
+    }
 }
 
 fn context_suffix(e: &Event, rates: &Rates) -> &'static str {
@@ -353,10 +446,12 @@ fn revision(catalog: &Catalog, rules: &[Rule]) -> String {
     let value = serde_json::to_value((catalog, rules)).expect("pricing serializes");
     let mut json = String::new();
     write_stable(&mut json, &value);
-    Sha256::digest(json.as_bytes()).iter().fold(String::with_capacity(64), |mut hex, b| {
-        let _ = write!(hex, "{b:02x}");
-        hex
-    })
+    Sha256::digest(json.as_bytes())
+        .iter()
+        .fold(String::with_capacity(64), |mut hex, b| {
+            let _ = write!(hex, "{b:02x}");
+            hex
+        })
 }
 
 fn write_stable(out: &mut String, value: &Value) {
@@ -411,8 +506,17 @@ fn js_number(f: f64) -> String {
     } else if -6 < n && n <= 0 {
         format!("{sign}0.{}{digits}", "0".repeat(-n as usize))
     } else {
-        let frac = if k > 1 { format!(".{}", &digits[1..]) } else { String::new() };
-        format!("{sign}{}{frac}e{}{}", &digits[..1], if n > 0 { "+" } else { "-" }, (n - 1).abs())
+        let frac = if k > 1 {
+            format!(".{}", &digits[1..])
+        } else {
+            String::new()
+        };
+        format!(
+            "{sign}{}{frac}e{}{}",
+            &digits[..1],
+            if n > 0 { "+" } else { "-" },
+            (n - 1).abs()
+        )
     }
 }
 
@@ -444,7 +548,11 @@ impl Pricing {
     /// or else starts from the bundled catalog.
     pub fn open(dir: &Path, seed: Option<&Path>) -> Pricing {
         let path = dir.join(FILE);
-        let unseeded = || State { policy: Arc::new(Policy::bundled()), checked_at: None, refresh_error: None };
+        let unseeded = || State {
+            policy: Arc::new(Policy::bundled()),
+            checked_at: None,
+            refresh_error: None,
+        };
         let state = if path.exists() {
             read_state(&path).unwrap_or_else(|err| {
                 tracing::warn!("pricing: {}: {err:#}", path.display());
@@ -466,7 +574,11 @@ impl Pricing {
                 _ => unseeded(),
             }
         };
-        Pricing { path, download: DOWNLOAD.into(), state: Mutex::new(state) }
+        Pricing {
+            path,
+            download: DOWNLOAD.into(),
+            state: Mutex::new(state),
+        }
     }
 
     pub fn policy(&self) -> Arc<Policy> {
@@ -480,9 +592,14 @@ impl Pricing {
 
     fn until_due(&self) -> Duration {
         let state = self.state.lock().unwrap();
-        let checked = state.checked_at.as_deref().and_then(|at| DateTime::parse_from_rfc3339(at).ok());
+        let checked = state
+            .checked_at
+            .as_deref()
+            .and_then(|at| DateTime::parse_from_rfc3339(at).ok());
         checked.map_or(Duration::ZERO, |at| {
-            (at.with_timezone(&Utc) + REFRESH_EVERY - Utc::now()).to_std().unwrap_or(Duration::ZERO)
+            (at.with_timezone(&Utc) + REFRESH_EVERY - Utc::now())
+                .to_std()
+                .unwrap_or(Duration::ZERO)
         })
     }
 
@@ -500,7 +617,14 @@ impl Pricing {
             }
             Ok(mut catalog) => {
                 let mut models = BUNDLED.models.clone();
-                models.extend(state.policy.catalog.models.iter().map(|(k, v)| (k.clone(), v.clone())));
+                models.extend(
+                    state
+                        .policy
+                        .catalog
+                        .models
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone())),
+                );
                 models.extend(catalog.models);
                 catalog.models = models;
                 let policy = Policy::new(catalog, state.policy.rules.clone());
@@ -542,7 +666,11 @@ fn read_state(path: &Path) -> Result<State> {
     if let Some(problem) = policy.problem() {
         bail!(problem);
     }
-    Ok(State { policy: Arc::new(policy), checked_at: stored.checked_at, refresh_error: stored.refresh_error })
+    Ok(State {
+        policy: Arc::new(policy),
+        checked_at: stored.checked_at,
+        refresh_error: stored.refresh_error,
+    })
 }
 
 fn write_state(path: &Path, state: &State) -> Result<()> {
@@ -560,9 +688,17 @@ fn write_state(path: &Path, state: &State) -> Result<()> {
 pub(crate) fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     let dir = path.parent().context("a state file has a directory")?;
-    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)?;
     let temp = path.with_extension(format!("tmp-{}", std::process::id()));
-    let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&temp)?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&temp)?;
     std::io::Write::write_all(&mut file, data)?;
     file.sync_all()?;
     std::fs::rename(&temp, path)?;
@@ -570,7 +706,12 @@ pub(crate) fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
 }
 
 async fn download(url: &str) -> Result<Catalog> {
-    let response = reqwest::Client::new().get(url).timeout(Duration::from_secs(15)).send().await?.error_for_status()?;
+    let response = reqwest::Client::new()
+        .get(url)
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await?
+        .error_for_status()?;
     decode_upstream(&response.bytes().await?)
 }
 
@@ -578,13 +719,24 @@ fn decode_upstream(body: &[u8]) -> Result<Catalog> {
     let raw: HashMap<String, Value> =
         serde_json::from_slice(body).context("the downloaded pricing catalog is invalid")?;
     let is_rate = |field: &str| {
-        ["input_cost_per_token", "output_cost_per_token", "cache_read_input_token_cost", "cache_creation_input_token_cost"]
-            .iter()
-            .any(|base| field.strip_prefix(base).is_some_and(|rest| rest.is_empty() || rest.starts_with('_')))
+        [
+            "input_cost_per_token",
+            "output_cost_per_token",
+            "cache_read_input_token_cost",
+            "cache_creation_input_token_cost",
+        ]
+        .iter()
+        .any(|base| {
+            field
+                .strip_prefix(base)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('_'))
+        })
     };
     let mut models = HashMap::new();
     for (model, value) in raw {
-        let Value::Object(fields) = value else { continue };
+        let Value::Object(fields) = value else {
+            continue;
+        };
         let mut rates = Rates::new();
         for (field, rate) in fields {
             if !is_rate(&field) || rate.is_null() {
@@ -595,14 +747,19 @@ fn decode_upstream(body: &[u8]) -> Result<Catalog> {
                 _ => bail!("the downloaded price for {model} is invalid"),
             };
         }
-        if rates.contains_key("input_cost_per_token") && rates.contains_key("output_cost_per_token") {
+        if rates.contains_key("input_cost_per_token") && rates.contains_key("output_cost_per_token")
+        {
             models.insert(model, rates);
         }
     }
     if models.len() < 100 {
         bail!("the downloaded pricing catalog is unexpectedly incomplete");
     }
-    Ok(Catalog { updated_at: iso_now(), source: SOURCE.into(), models })
+    Ok(Catalog {
+        updated_at: iso_now(),
+        source: SOURCE.into(),
+        models,
+    })
 }
 
 fn iso_now() -> String {
@@ -615,7 +772,13 @@ mod tests {
 
     fn test_rules() -> Vec<Rule> {
         vec![
-            Rule { model: "my-model".into(), kind: RuleKind::Alias, target: "gpt-5".into(), nickname: String::new(), rates: None },
+            Rule {
+                model: "my-model".into(),
+                kind: RuleKind::Alias,
+                target: "gpt-5".into(),
+                nickname: String::new(),
+                rates: None,
+            },
             Rule {
                 model: "cheap".into(),
                 kind: RuleKind::Rates,
@@ -631,7 +794,14 @@ mod tests {
         ]
     }
 
-    fn test_event(harness: &str, model: &str, input: i64, output: i64, cache_read: i64, cache_write: i64) -> Event {
+    fn test_event(
+        harness: &str,
+        model: &str,
+        input: i64,
+        output: i64,
+        cache_read: i64,
+        cache_write: i64,
+    ) -> Event {
         Event {
             id: "a".into(),
             timestamp: "2026-01-01T00:00:00.000Z".into(),
@@ -653,16 +823,27 @@ mod tests {
 
     #[test]
     fn revision_matches_token_tracker() {
-        assert_eq!(Policy::bundled().revision, "b6d7dedba6e2b99bec30330f941cba7d8bfc98c6cbbc3a02ed9ede3c86128713");
+        assert_eq!(
+            Policy::bundled().revision,
+            "b6d7dedba6e2b99bec30330f941cba7d8bfc98c6cbbc3a02ed9ede3c86128713"
+        );
         let ruled = Policy::new(BUNDLED.clone(), test_rules());
-        assert_eq!(ruled.revision, "bdfc8da71746171d07ab564de94505ff037a5816eb8787fb9998cbe7ee5bbaaf");
+        assert_eq!(
+            ruled.revision,
+            "bdfc8da71746171d07ab564de94505ff037a5816eb8787fb9998cbe7ee5bbaaf"
+        );
     }
 
     #[tokio::test]
     async fn seeds_then_refreshes_its_own_file() {
-        let root = std::env::temp_dir().join(format!("broadcom-usage-pricing-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("broadcom-usage-pricing-{}", std::process::id()));
         let seed = root.join("seed").join(FILE);
-        let seeded = State { policy: Arc::new(Policy::new(BUNDLED.clone(), test_rules())), checked_at: None, refresh_error: None };
+        let seeded = State {
+            policy: Arc::new(Policy::new(BUNDLED.clone(), test_rules())),
+            checked_at: None,
+            refresh_error: None,
+        };
         write_state(&seed, &seeded).unwrap();
         let seed_bytes = std::fs::read(&seed).unwrap();
 
@@ -674,26 +855,50 @@ mod tests {
         let upstream: serde_json::Map<String, Value> = (0..120)
             .map(|i| (format!("model-{i}"), serde_json::json!({ "input_cost_per_token": 1e-6, "output_cost_per_token": 2e-6, "max_tokens": 10 })))
             .collect();
-        let app = axum::Router::new().route("/", axum::routing::get(move || async move { Value::Object(upstream).to_string() }));
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::get(move || async move { Value::Object(upstream).to_string() }),
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/", listener.local_addr().unwrap());
         tokio::spawn(async move { axum::serve(listener, app).await });
 
-        let pricing = Pricing { download: url, ..Pricing::open(&dir, None) };
+        let pricing = Pricing {
+            download: url,
+            ..Pricing::open(&dir, None)
+        };
         assert_eq!(pricing.until_due(), Duration::ZERO);
         pricing.refresh().await.unwrap();
         let policy = pricing.policy();
-        assert_eq!(policy.catalog.models["model-7"], Rates::from([("input_cost_per_token".into(), 1e-6), ("output_cost_per_token".into(), 2e-6)]));
+        assert_eq!(
+            policy.catalog.models["model-7"],
+            Rates::from([
+                ("input_cost_per_token".into(), 1e-6),
+                ("output_cost_per_token".into(), 2e-6)
+            ])
+        );
         assert!(policy.catalog.models.contains_key("gpt-5") && policy.rules == test_rules());
         assert!(pricing.until_due() > Duration::from_secs(23 * 60 * 60));
         assert_eq!(Pricing::open(&dir, None).policy().revision, policy.revision);
-        assert_eq!(std::fs::read(&seed).unwrap(), seed_bytes, "the seed file is only read");
+        assert_eq!(
+            std::fs::read(&seed).unwrap(),
+            seed_bytes,
+            "the seed file is only read"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn js_numbers() {
-        for (f, s) in [(1.0, "1"), (0.1, "0.1"), (1e-7, "1e-7"), (2.5e-6, "0.0000025"), (1e21, "1e+21"), (123e18, "123000000000000000000"), (-1.5, "-1.5")] {
+        for (f, s) in [
+            (1.0, "1"),
+            (0.1, "0.1"),
+            (1e-7, "1e-7"),
+            (2.5e-6, "0.0000025"),
+            (1e21, "1e+21"),
+            (123e18, "123000000000000000000"),
+            (-1.5, "-1.5"),
+        ] {
             assert_eq!(js_number(f), s);
         }
     }
@@ -701,13 +906,32 @@ mod tests {
     #[test]
     fn estimate_cost() {
         let policy = Policy::bundled();
-        let opus = test_event("claude", "claude-opus-4-5-20251101", 1000, 2000, 300000, 5000);
+        let opus = test_event(
+            "claude",
+            "claude-opus-4-5-20251101",
+            1000,
+            2000,
+            300000,
+            5000,
+        );
         let (cost, known) = policy.estimate_cost(&opus, 2000, "standard");
-        assert!(known && near(cost, 0.24374999999999997), "opus standard {cost} {known}");
-        assert!(!policy.estimate_cost(&opus, 0, "priority").1, "a catalog price never borrows standard rates for another tier");
+        assert!(
+            known && near(cost, 0.24374999999999997),
+            "opus standard {cost} {known}"
+        );
+        assert!(
+            !policy.estimate_cost(&opus, 0, "priority").1,
+            "a catalog price never borrows standard rates for another tier"
+        );
         let gpt = test_event("codex", "gpt-5", 250000, 1000, 30000, 0);
-        assert!(near(policy.estimate_cost(&gpt, 0, "").0, 0.32625), "gpt-5 above 272k");
-        assert!(near(policy.estimate_cost(&gpt, 0, "flex").0, 0.163125), "gpt-5 flex");
+        assert!(
+            near(policy.estimate_cost(&gpt, 0, "").0, 0.32625),
+            "gpt-5 above 272k"
+        );
+        assert!(
+            near(policy.estimate_cost(&gpt, 0, "flex").0, 0.163125),
+            "gpt-5 flex"
+        );
     }
 
     #[test]
@@ -717,18 +941,49 @@ mod tests {
         alias.service_tier = Some(String::new());
         alias.cache_write_1h_tokens = Some(0);
         let got = policy.reprice(&alias).unwrap();
-        assert!(got.model == "gpt-5" && got.raw_model == "my-model" && near(got.cost_usd, 0.32625), "alias {got:?}");
-        let custom = Event { model: "cheap".into(), ..alias };
+        assert!(
+            got.model == "gpt-5" && got.raw_model == "my-model" && near(got.cost_usd, 0.32625),
+            "alias {got:?}"
+        );
+        let custom = Event {
+            model: "cheap".into(),
+            ..alias
+        };
         let got = policy.reprice(&custom).unwrap();
-        assert!(got.model == "Cheap" && near(got.cost_usd, 0.255), "custom {got:?}");
-        let mut legacy = test_event("claude", "claude-opus-4-5-20251101", 1000, 2000, 300000, 5000);
+        assert!(
+            got.model == "Cheap" && near(got.cost_usd, 0.255),
+            "custom {got:?}"
+        );
+        let mut legacy = test_event(
+            "claude",
+            "claude-opus-4-5-20251101",
+            1000,
+            2000,
+            300000,
+            5000,
+        );
         legacy.cost_usd = 1.25;
         legacy.cost_known = true;
         let got = policy.reprice(&legacy).unwrap_or(legacy);
-        assert!(got.cost_usd == 1.25 && got.cost_known, "a record without tier metadata keeps its reported cost: {got:?}");
-        assert!(policy.reprice(&got).is_none(), "a repriced record is stable");
+        assert!(
+            got.cost_usd == 1.25 && got.cost_known,
+            "a record without tier metadata keeps its reported cost: {got:?}"
+        );
+        assert!(
+            policy.reprice(&got).is_none(),
+            "a repriced record is stable"
+        );
         let mut cyclic = test_rules();
-        cyclic.push(Rule { model: "gpt-5".into(), kind: RuleKind::Alias, target: "my-model".into(), nickname: String::new(), rates: None });
-        assert!(Policy::new(BUNDLED.clone(), cyclic).problem().is_some(), "alias cycle accepted");
+        cyclic.push(Rule {
+            model: "gpt-5".into(),
+            kind: RuleKind::Alias,
+            target: "my-model".into(),
+            nickname: String::new(),
+            rates: None,
+        });
+        assert!(
+            Policy::new(BUNDLED.clone(), cyclic).problem().is_some(),
+            "alias cycle accepted"
+        );
     }
 }

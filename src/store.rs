@@ -100,14 +100,25 @@ static UPSERT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
           ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, 0, 0, ?35) ON CONFLICT (harness, id) DO UPDATE SET {}, \
           millis = excluded.millis, response_key = excluded.response_key, request_key = excluded.request_key, \
           hidden = 0, gone = 0, rev = excluded.rev",
-        COLUMNS.split(", ").map(|c| format!("{c} = excluded.{c}")).collect::<Vec<_>>().join(", ")
+        COLUMNS
+            .split(", ")
+            .map(|c| format!("{c} = excluded.{c}"))
+            .collect::<Vec<_>>()
+            .join(", ")
     )
 });
 
 /// Rewrites a resolved row's record fields in place: `?32` harness, `?33` id, `?34` revision.
 static REWRITE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-    let assignments: Vec<String> = COLUMNS.split(", ").enumerate().map(|(i, c)| format!("{c} = ?{}", i + 1)).collect();
-    format!("UPDATE events SET {}, rev = ?34 WHERE harness = ?32 AND id = ?33", assignments.join(", "))
+    let assignments: Vec<String> = COLUMNS
+        .split(", ")
+        .enumerate()
+        .map(|(i, c)| format!("{c} = ?{}", i + 1))
+        .collect();
+    format!(
+        "UPDATE events SET {}, rev = ?34 WHERE harness = ?32 AND id = ?33",
+        assignments.join(", ")
+    )
 });
 
 /// A row the views count.
@@ -207,7 +218,10 @@ impl Store {
         if !fill {
             for deleted in &batch.deleted_ids {
                 if let Some(p) = record(&tx, id, deleted)? {
-                    tx.execute("DELETE FROM records WHERE device = ?1 AND id = ?2", params![id, deleted])?;
+                    tx.execute(
+                        "DELETE FROM records WHERE device = ?1 AND id = ?2",
+                        params![id, deleted],
+                    )?;
                     touched.insert((p.harness, p.id));
                     result.deleted += 1;
                 }
@@ -226,7 +240,9 @@ impl Store {
         let db = self.read.lock().unwrap();
         Ok(db
             .prepare_cached("SELECT inode, offset FROM cursors WHERE path = ?1")?
-            .query_row([path], |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64)))
+            .query_row([path], |r| {
+                Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64))
+            })
             .optional()?)
     }
 
@@ -259,7 +275,13 @@ impl Store {
                 "INSERT OR REPLACE INTO records (device, id, harness, total, event) VALUES (?1, ?2, ?3, ?4, ?5)",
             )?;
             for e in events {
-                insert.execute(params![device.id, e.id, e.harness, e.token_total(), serde_json::to_string(&e)?])?;
+                insert.execute(params![
+                    device.id,
+                    e.id,
+                    e.harness,
+                    e.token_total(),
+                    serde_json::to_string(&e)?
+                ])?;
                 count += 1;
             }
         }
@@ -290,7 +312,10 @@ impl Store {
         drop(rows);
         drop(winners);
         tracing::info!("resolved {} records", proxies.len());
-        tx.execute(&format!("UPDATE events SET hidden = {HAS_RECEIPT} WHERE source <> 'proxy'"), [])?;
+        tx.execute(
+            &format!("UPDATE events SET hidden = {HAS_RECEIPT} WHERE source <> 'proxy'"),
+            [],
+        )?;
         tracing::info!("hid transcript records the proxy answered for");
         for (harness, id) in &proxies {
             resolver.reconcile(harness, id)?;
@@ -318,7 +343,15 @@ impl Store {
             )?;
             for e in rows {
                 if let Some(p) = policy.reprice(&e) {
-                    update.execute(params![p.harness, p.id, p.model, p.raw_model, p.cost_usd, p.cost_known, rev])?;
+                    update.execute(params![
+                        p.harness,
+                        p.id,
+                        p.model,
+                        p.raw_model,
+                        p.cost_usd,
+                        p.cost_known,
+                        rev
+                    ])?;
                     changed += 1;
                 }
             }
@@ -335,7 +368,8 @@ impl Store {
     pub fn rows_after(&self, rev: i64) -> Result<(Vec<(i64, bool, crate::views::Row)>, i64)> {
         let db = self.read.lock().unwrap();
         let tx = db.unchecked_transaction()?;
-        let latest: i64 = tx.query_row("SELECT coalesce(max(rev), 0) FROM events", [], |r| r.get(0))?;
+        let latest: i64 =
+            tx.query_row("SELECT coalesce(max(rev), 0) FROM events", [], |r| r.get(0))?;
         let mut strings: HashMap<String, Arc<str>> = HashMap::new();
         let mut intern = |r: &Row, i: usize| -> rusqlite::Result<Arc<str>> {
             let text = r.get_ref(i)?.as_str()?;
@@ -405,11 +439,16 @@ impl Store {
     /// Proxy receipts charged to these credentials.
     pub fn receipts(&self, credentials: &[String]) -> Result<Vec<Event>> {
         let db = self.read.lock().unwrap();
-        let mut statement =
-            db.prepare_cached(&format!("SELECT {COLUMNS} FROM events WHERE source = 'proxy' AND gone = 0 AND account_id = ?1"))?;
+        let mut statement = db.prepare_cached(&format!(
+            "SELECT {COLUMNS} FROM events WHERE source = 'proxy' AND gone = 0 AND account_id = ?1"
+        ))?;
         let mut out = Vec::new();
         for credential in credentials {
-            out.extend(statement.query_map([credential], read_event)?.collect::<rusqlite::Result<Vec<_>>>()?);
+            out.extend(
+                statement
+                    .query_map([credential], read_event)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?,
+            );
         }
         Ok(out)
     }
@@ -426,10 +465,21 @@ impl Store {
     pub fn devices(&self) -> Result<Vec<Device>> {
         let db = self.read.lock().unwrap();
         let mut others: Vec<Device> = db
-            .prepare_cached("SELECT id, label, synced_at FROM devices WHERE id <> ?1 ORDER BY label, id")?
-            .query_map([&self.local.id], |r| Ok(Device { id: r.get(0)?, label: r.get(1)?, synced_at: r.get(2)? }))?
+            .prepare_cached(
+                "SELECT id, label, synced_at FROM devices WHERE id <> ?1 ORDER BY label, id",
+            )?
+            .query_map([&self.local.id], |r| {
+                Ok(Device {
+                    id: r.get(0)?,
+                    label: r.get(1)?,
+                    synced_at: r.get(2)?,
+                })
+            })?
             .collect::<rusqlite::Result<_>>()?;
-        let mut out = vec![Device { synced_at: Some(now_millis()), ..self.local.clone() }];
+        let mut out = vec![Device {
+            synced_at: Some(now_millis()),
+            ..self.local.clone()
+        }];
         out.append(&mut others);
         Ok(out)
     }
@@ -441,12 +491,19 @@ impl Store {
             .prepare("SELECT event FROM records WHERE device = ?1")?
             .query_map([device], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows.iter().filter_map(|s| serde_json::from_str(s).ok()).collect())
+        Ok(rows
+            .iter()
+            .filter_map(|s| serde_json::from_str(s).ok())
+            .collect())
     }
 }
 
 fn exists(tx: &Transaction, sql: &str, id: &str) -> Result<bool> {
-    Ok(tx.prepare_cached(sql)?.query_row([id], |_| Ok(())).optional()?.is_some())
+    Ok(tx
+        .prepare_cached(sql)?
+        .query_row([id], |_| Ok(()))
+        .optional()?
+        .is_some())
 }
 
 fn record(tx: &Transaction, device: &str, id: &str) -> Result<Option<Event>> {
@@ -461,11 +518,15 @@ fn record(tx: &Transaction, device: &str, id: &str) -> Result<Option<Event>> {
 }
 
 pub fn now_millis() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
 }
 
 fn is_remote(repository: &Option<String>) -> bool {
-    repository.as_deref().is_some_and(|r| !r.is_empty() && !r.starts_with("local:"))
+    repository
+        .as_deref()
+        .is_some_and(|r| !r.is_empty() && !r.starts_with("local:"))
 }
 
 /// token-tracker's normalization of an uploaded record. A record that names its T3
@@ -513,7 +574,8 @@ fn response_identity(e: &Event) -> Option<String> {
             if let Some(rest) = id.strip_prefix("claude:advisor:") {
                 return Some(format!("advisor:{rest}"));
             }
-            id.strip_prefix("claude:message:").map(|rest| rest.split(':').next().unwrap_or("").to_string())
+            id.strip_prefix("claude:message:")
+                .map(|rest| rest.split(':').next().unwrap_or("").to_string())
         }
         "codex" => id.strip_prefix("codex:response:").map(str::to_string),
         _ => None,
@@ -527,7 +589,10 @@ fn request_identity(e: &Event) -> Option<String> {
     }
     if e.harness == "claude" {
         if let Some(rest) = e.id.strip_prefix("claude:message:") {
-            return rest.split_once(':').map(|(_, r)| r.to_string()).filter(|s| !s.is_empty());
+            return rest
+                .split_once(':')
+                .map(|(_, r)| r.to_string())
+                .filter(|s| !s.is_empty());
         }
     }
     None
@@ -555,7 +620,11 @@ type Identity = (String, String, Option<String>);
 
 /// The revision this transaction's changes carry.
 fn next_rev(tx: &Transaction) -> Result<i64> {
-    Ok(tx.query_row("SELECT coalesce(max(rev), 0) + 1 FROM events", [], |r| r.get(0))?)
+    Ok(
+        tx.query_row("SELECT coalesce(max(rev), 0) + 1 FROM events", [], |r| {
+            r.get(0)
+        })?,
+    )
 }
 
 struct Resolver<'a> {
@@ -567,7 +636,12 @@ struct Resolver<'a> {
 
 impl<'a> Resolver<'a> {
     fn new(tx: &'a Transaction<'a>, local: &'a str, policy: &'a Policy) -> Result<Self> {
-        Ok(Self { tx, local, policy, rev: next_rev(tx)? })
+        Ok(Self {
+            tx,
+            local,
+            policy,
+            rev: next_rev(tx)?,
+        })
     }
 
     fn resolve(&self, keys: &BTreeSet<(String, String)>) -> Result<()> {
@@ -635,9 +709,16 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
-    fn collect(&self, sql: &str, args: impl rusqlite::Params, into: &mut BTreeSet<(String, String)>) -> Result<()> {
+    fn collect(
+        &self,
+        sql: &str,
+        args: impl rusqlite::Params,
+        into: &mut BTreeSet<(String, String)>,
+    ) -> Result<()> {
         let mut statement = self.tx.prepare_cached(sql)?;
-        let rows = statement.query_map(args, |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let rows = statement.query_map(args, |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
         for row in rows {
             into.insert(row?);
         }
@@ -647,7 +728,9 @@ impl<'a> Resolver<'a> {
     fn resolved(&self, harness: &str, id: &str) -> Result<Option<Event>> {
         Ok(self
             .tx
-            .prepare_cached(&format!("SELECT {COLUMNS} FROM events WHERE harness = ?1 AND id = ?2 AND gone = 0"))?
+            .prepare_cached(&format!(
+                "SELECT {COLUMNS} FROM events WHERE harness = ?1 AND id = ?2 AND gone = 0"
+            ))?
             .query_row(params![harness, id], read_event)
             .optional()?)
     }
@@ -682,22 +765,34 @@ impl<'a> Resolver<'a> {
 
     fn insert(&self, e: &Event) -> Result<()> {
         let priced = self.policy.reprice(e).unwrap_or_else(|| e.clone());
-        self.tx.prepare_cached(&UPSERT)?
-        .execute(rusqlite::params_from_iter(event_values(&priced).into_iter().chain([
-            millis_of(&priced.timestamp).map_or(rusqlite::types::Value::Null, rusqlite::types::Value::Integer),
-            opt(response_identity(e)),
-            opt(request_identity(e)),
-            rusqlite::types::Value::Integer(self.rev),
-        ])))?;
+        self.tx
+            .prepare_cached(&UPSERT)?
+            .execute(rusqlite::params_from_iter(
+                event_values(&priced).into_iter().chain([
+                    millis_of(&priced.timestamp).map_or(
+                        rusqlite::types::Value::Null,
+                        rusqlite::types::Value::Integer,
+                    ),
+                    opt(response_identity(e)),
+                    opt(request_identity(e)),
+                    rusqlite::types::Value::Integer(self.rev),
+                ]),
+            ))?;
         Ok(())
     }
 
     /// Rewrites a proxy receipt with its transcript's metadata, from its raw record.
     fn reconcile(&self, harness: &str, id: &str) -> Result<()> {
-        let Some(wire) = self.winner(harness, id)? else { return Ok(()) };
+        let Some(wire) = self.winner(harness, id)? else {
+            return Ok(());
+        };
         let mut resolved = wire.clone();
         let transcript = |sql: &str, args: &[&dyn rusqlite::ToSql]| -> Result<Option<Event>> {
-            Ok(self.tx.prepare_cached(sql)?.query_row(args, read_event).optional()?)
+            Ok(self
+                .tx
+                .prepare_cached(sql)?
+                .query_row(args, read_event)
+                .optional()?)
         };
         let matched = match response_identity(&wire) {
             Some(r) => transcript(
@@ -740,7 +835,9 @@ impl<'a> Resolver<'a> {
         values.push(rusqlite::types::Value::Text(harness.to_string()));
         values.push(rusqlite::types::Value::Text(id.to_string()));
         values.push(rusqlite::types::Value::Integer(self.rev));
-        self.tx.prepare_cached(&REWRITE)?.execute(rusqlite::params_from_iter(values))?;
+        self.tx
+            .prepare_cached(&REWRITE)?
+            .execute(rusqlite::params_from_iter(values))?;
         Ok(())
     }
 }
@@ -830,7 +927,12 @@ pub fn millis_of(timestamp: &str) -> Option<i64> {
         return Some(t.timestamp_millis());
     }
     if let Ok(t) = NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%dT%H:%M:%S%.f") {
-        return chrono::Local.from_local_datetime(&t).earliest().map(|t| t.timestamp_millis());
+        return chrono::Local
+            .from_local_datetime(&t)
+            .earliest()
+            .map(|t| t.timestamp_millis());
     }
-    NaiveDate::parse_from_str(timestamp, "%Y-%m-%d").ok().map(|d| d.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp_millis())
+    NaiveDate::parse_from_str(timestamp, "%Y-%m-%d")
+        .ok()
+        .map(|d| d.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp_millis())
 }

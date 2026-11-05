@@ -54,13 +54,21 @@ pub struct Event {
     pub reasoning_tokens: i64,
     #[serde(default, rename = "costUsd")]
     pub cost_usd: f64,
-    #[serde(default, rename = "reportedCostUsd", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "reportedCostUsd",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub reported_cost_usd: Option<f64>,
     #[serde(default)]
     pub cost_known: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<String>,
-    #[serde(default, rename = "cacheWrite1hTokens", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "cacheWrite1hTokens",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub cache_write_1h_tokens: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requests: Option<i64>,
@@ -70,9 +78,17 @@ pub struct Event {
     pub session_title: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub project_name: String,
-    #[serde(default, rename = "t3ThreadId", skip_serializing_if = "String::is_empty")]
+    #[serde(
+        default,
+        rename = "t3ThreadId",
+        skip_serializing_if = "String::is_empty"
+    )]
     pub t3_thread_id: String,
-    #[serde(default, rename = "t3ThreadUrl", skip_serializing_if = "String::is_empty")]
+    #[serde(
+        default,
+        rename = "t3ThreadUrl",
+        skip_serializing_if = "String::is_empty"
+    )]
     pub t3_thread_url: String,
     /// How the Claude Code process was started: cli, sdk-cli (claude -p), sdk-ts, or a product's own name.
     #[serde(default, skip_serializing_if = "String::is_empty")]

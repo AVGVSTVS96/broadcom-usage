@@ -13,8 +13,8 @@ use crate::config::Config;
 use crate::store::{Store, now_millis};
 use crate::stream::Stream;
 use crate::views::{
-    self, AppendLog, Row, Binding, CreditsView, Labels, LimitInputs, LimitReading, Live, Names, Past, PlanPricing,
-    Processes, Range, SessionUsage, UsageView,
+    self, AppendLog, Binding, CreditsView, Labels, LimitInputs, LimitReading, Live, Names, Past,
+    PlanPricing, Processes, Range, Row, SessionUsage, UsageView,
 };
 
 /// A range older than this reloads behind the request that finds it.
@@ -111,27 +111,45 @@ pub struct Deck {
 
 /// The machine's IANA zone, as Go's deck finds it.
 pub fn local_zone() -> Tz {
-    let name = std::env::var("TZ").ok().map(|z| z.trim_start_matches(':').to_string()).or_else(|| {
-        std::fs::read_link("/etc/localtime")
-            .ok()
-            .and_then(|link| link.to_string_lossy().split_once("zoneinfo/").map(|(_, z)| z.to_string()))
-    });
+    let name = std::env::var("TZ")
+        .ok()
+        .map(|z| z.trim_start_matches(':').to_string())
+        .or_else(|| {
+            std::fs::read_link("/etc/localtime").ok().and_then(|link| {
+                link.to_string_lossy()
+                    .split_once("zoneinfo/")
+                    .map(|(_, z)| z.to_string())
+            })
+        });
     name.and_then(|z| z.parse().ok()).unwrap_or(Tz::UTC)
 }
 
 impl Deck {
     pub fn new(config: Config, store: Arc<Store>) -> Self {
-        let zone = config.timezone.as_deref().and_then(|z| z.parse().ok()).unwrap_or_else(local_zone);
-        let readings = AppendLog::new(config.pool_dir.join("usage-history.ndjson"), views::parse_reading);
+        let zone = config
+            .timezone
+            .as_deref()
+            .and_then(|z| z.parse().ok())
+            .unwrap_or_else(local_zone);
+        let readings = AppendLog::new(
+            config.pool_dir.join("usage-history.ndjson"),
+            views::parse_reading,
+        );
         let mut ranges: HashMap<Range, RangeCache> = HashMap::new();
         ranges.entry(Range::Week).or_default().viewed = Some(Instant::now());
-        let bindings = AppendLog::new(config.pool_dir.join("attribution.ndjson"), views::parse_binding);
+        let bindings = AppendLog::new(
+            config.pool_dir.join("attribution.ndjson"),
+            views::parse_binding,
+        );
         Self {
             config,
             zone,
             store,
             stream: Stream::default(),
-            state: Mutex::new(State { ranges, ..Default::default() }),
+            state: Mutex::new(State {
+                ranges,
+                ..Default::default()
+            }),
             rows: Mutex::default(),
             readings: Mutex::new(readings),
             bindings: Mutex::new(bindings),
@@ -152,18 +170,35 @@ impl Deck {
         let (readings, bindings) = (readings.read().0, bindings.read().0);
         let from = ranges
             .iter()
-            .map(|&r| views::reads_from(r, self.zone, now, readings).min(views::pricing_from(r, self.zone, now)))
+            .map(|&r| {
+                views::reads_from(r, self.zone, now, readings)
+                    .min(views::pricing_from(r, self.zone, now))
+            })
             .fold(f64::INFINITY, f64::min);
         let mut rows = self.rows.lock().unwrap();
         rows.sync(&self.store)?;
         let prepared = views::prepare(rows.since(from));
-        let plans = views::read_plans(Some(&self.config.accounts_file), Some(&self.config.pool_dir), &self.config.plans);
+        let plans = views::read_plans(
+            Some(&self.config.accounts_file),
+            Some(&self.config.pool_dir),
+            &self.config.plans,
+        );
         let pricing = PlanPricing::new(&plans, &prepared, self.zone, now);
         let limits = LimitInputs::new(readings, bindings, self.config.agent_sdk());
         let devices = self.store.devices()?;
         Ok(ranges
             .iter()
-            .map(|&r| views::session_usage(&prepared, r, self.zone, now, Some(&pricing), Some(&limits), &devices))
+            .map(|&r| {
+                views::session_usage(
+                    &prepared,
+                    r,
+                    self.zone,
+                    now,
+                    Some(&pricing),
+                    Some(&limits),
+                    &devices,
+                )
+            })
             .collect())
     }
 
@@ -176,7 +211,13 @@ impl Deck {
             let state = self.state.lock().unwrap();
             ranges
                 .into_iter()
-                .filter(|r| state.ranges.get(r).and_then(|c| c.at).is_none_or(|at| at < started))
+                .filter(|r| {
+                    state
+                        .ranges
+                        .get(r)
+                        .and_then(|c| c.at)
+                        .is_none_or(|at| at < started)
+                })
                 .collect()
         };
         if ranges.is_empty() {
@@ -190,10 +231,9 @@ impl Deck {
             let changed = {
                 let mut state = self.state.lock().unwrap();
                 let cache = state.ranges.entry(r).or_default();
-                let changed = cache
-                    .value
-                    .as_ref()
-                    .is_none_or(|old| old.sessions != value.sessions || old.windows != value.windows);
+                let changed = cache.value.as_ref().is_none_or(|old| {
+                    old.sessions != value.sessions || old.windows != value.windows
+                });
                 cache.value = Some(Arc::new(value));
                 cache.at = Some(Instant::now());
                 if changed {
@@ -236,7 +276,11 @@ impl Deck {
     fn labels(&self, tracked: &SessionUsage) -> Labels {
         Labels {
             accounts: views::account_labels(&self.config.accounts_file),
-            devices: tracked.devices.iter().map(|d| (d.id.clone(), d.label.clone())).collect(),
+            devices: tracked
+                .devices
+                .iter()
+                .map(|d| (d.id.clone(), d.label.clone()))
+                .collect(),
         }
     }
 
@@ -254,17 +298,34 @@ impl Deck {
             }
         };
         let key = serde_json::to_string(&q)?;
-        let cached = self.state.lock().unwrap().ranges.get(&q.range).and_then(|c| c.views.get(&key).cloned());
+        let cached = self
+            .state
+            .lock()
+            .unwrap()
+            .ranges
+            .get(&q.range)
+            .and_then(|c| c.views.get(&key).cloned());
         let view = match cached {
             Some(view) => view,
             None => {
-                let week = self.state.lock().unwrap().ranges.get(&Range::Week).and_then(|c| c.value.clone());
+                let week = self
+                    .state
+                    .lock()
+                    .unwrap()
+                    .ranges
+                    .get(&Range::Week)
+                    .and_then(|c| c.value.clone());
                 let labels = self.labels(week.as_deref().unwrap_or(&tracked));
                 let deck = self.clone();
                 let tracked = tracked.clone();
                 let view = tokio::task::spawn_blocking(move || -> Result<UsageView> {
-                    let parts: Vec<_> = tracked.sessions.iter().flat_map(|s| views::parts_of(s, &names)).collect();
-                    let mut view = views::usage_view(&tracked, &parts, &labels, &q, &deck.config.agent_sdk());
+                    let parts: Vec<_> = tracked
+                        .sessions
+                        .iter()
+                        .flat_map(|s| views::parts_of(s, &names))
+                        .collect();
+                    let mut view =
+                        views::usage_view(&tracked, &parts, &labels, &q, &deck.config.agent_sdk());
                     view.sources.proxy_since = deck.store.proxy_since()?.map(|ms| ms as f64);
                     Ok(view)
                 })
@@ -301,7 +362,10 @@ impl Deck {
                 Err(e) => return Err(e),
             };
             let credentials: Vec<String> = grants.iter().map(|g| g.credential_id.clone()).collect();
-            let receipts = deck.store.receipts(&credentials).map_err(|e| e.to_string())?;
+            let receipts = deck
+                .store
+                .receipts(&credentials)
+                .map_err(|e| e.to_string())?;
             views::credits(&grants, &receipts, now_millis())
         })
         .await
@@ -325,7 +389,8 @@ impl Deck {
                 .iter()
                 .filter(|(r, c)| {
                     c.value.is_some()
-                        && (c.viewed.is_some_and(|v| v.elapsed() < VIEWED_FOR) || (**r == Range::Week && listening))
+                        && (c.viewed.is_some_and(|v| v.elapsed() < VIEWED_FOR)
+                            || (**r == Range::Week && listening))
                 })
                 .map(|(r, _)| *r)
                 .collect()
@@ -388,8 +453,19 @@ impl Deck {
                 .iter()
                 .find_map(|r| state.ranges.get(r).and_then(|c| c.value.clone()));
             let names = state.names.clone();
-            let State { processes, first_seen, .. } = &mut *state;
-            let live = views::live_map(processes, &seats, names.as_deref(), tracked.as_deref(), first_seen, now_millis());
+            let State {
+                processes,
+                first_seen,
+                ..
+            } = &mut *state;
+            let live = views::live_map(
+                processes,
+                &seats,
+                names.as_deref(),
+                tracked.as_deref(),
+                first_seen,
+                now_millis(),
+            );
             let entries = live.entries();
             state.live = live;
             entries
@@ -400,5 +476,117 @@ impl Deck {
                 .map(|(k, v)| (k, serde_json::value::to_raw_value(&v).expect("plain data")))
                 .collect(),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::{Batch, Device, Event};
+    use crate::pricing::Policy;
+
+    fn record(id: &str, at: &str, output: i64) -> Event {
+        Event {
+            id: id.into(),
+            timestamp: at.into(),
+            harness: "claude".into(),
+            model: "claude-opus-4-5".into(),
+            session_id: "s".into(),
+            output_tokens: output,
+            ..Default::default()
+        }
+    }
+
+    fn apply(store: &Store, device: &str, events: Vec<Event>, deleted: &[&str]) {
+        let device = Device {
+            id: device.into(),
+            label: device.into(),
+            synced_at: None,
+        };
+        let deleted_ids = deleted.iter().map(|s| s.to_string()).collect();
+        store
+            .apply(
+                &Batch {
+                    device,
+                    events,
+                    deleted_ids,
+                },
+                false,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn rows_follow_the_store_in_time_order() {
+        let dir = std::env::temp_dir().join(format!("broadcom-usage-rows-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let local = Device {
+            id: "server".into(),
+            label: "server".into(),
+            synced_at: None,
+        };
+        let store = Store::open(&dir.join("usage.db"), local, Arc::new(Policy::bundled())).unwrap();
+        let mut rows = Rows::default();
+        let check = |rows: &mut Rows, want: &[i64]| {
+            rows.sync(&store).unwrap();
+            let fresh = {
+                let mut r = Rows::default();
+                r.sync(&store).unwrap();
+                r
+            };
+            let outputs = |r: &Rows| r.rows.iter().map(|r| r.output_tokens).collect::<Vec<_>>();
+            assert_eq!(outputs(rows), want);
+            assert_eq!(
+                outputs(rows),
+                outputs(&fresh),
+                "an incremental refresh equals a full read"
+            );
+            assert!(rows.ids.iter().enumerate().all(|(i, id)| rows.at[id] == i));
+        };
+        apply(
+            &store,
+            "mac",
+            vec![
+                record("a", "2026-11-01T00:00:02Z", 2),
+                record("b", "2026-11-01T00:00:04Z", 4),
+            ],
+            &[],
+        );
+        check(&mut rows, &[2, 4]);
+        apply(
+            &store,
+            "mac",
+            vec![
+                record("c", "2026-11-01T00:00:03Z", 3),
+                record("a", "2026-11-01T00:00:02Z", 20),
+            ],
+            &[],
+        );
+        check(&mut rows, &[20, 3, 4]);
+        apply(
+            &store,
+            "mac",
+            vec![record("b", "2026-11-01T00:00:01Z", 4)],
+            &[],
+        );
+        check(&mut rows, &[4, 20, 3]);
+        apply(&store, "mac", vec![], &["c"]);
+        check(&mut rows, &[4, 20]);
+        let receipt = Event {
+            source: "proxy".into(),
+            upstream_request_id: "r".into(),
+            ..record("p", "2026-11-01T00:00:05Z", 9)
+        };
+        apply(
+            &store,
+            "server",
+            vec![
+                receipt,
+                record("claude:message:m:r", "2026-11-01T00:00:06Z", 9),
+            ],
+            &[],
+        );
+        check(&mut rows, &[4, 20, 9]);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

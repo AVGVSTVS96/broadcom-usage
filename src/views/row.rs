@@ -58,6 +58,10 @@ impl From<&crate::event::Event> for Row {
 
 impl Row {
     pub fn token_total(&self) -> i64 {
-        self.input_tokens + self.output_tokens + self.cache_read_tokens + self.cache_write_tokens + self.unclassified_tokens
+        self.input_tokens
+            + self.output_tokens
+            + self.cache_read_tokens
+            + self.cache_write_tokens
+            + self.unclassified_tokens
     }
 }

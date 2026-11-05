@@ -25,7 +25,10 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/events", get(events));
     Router::new()
         .nest("/v8/management/deck", deck)
-        .route("/v0/management/usage/events", post(push).layer(DefaultBodyLimit::max(256 << 20)))
+        .route(
+            "/v0/management/usage/events",
+            post(push).layer(DefaultBodyLimit::max(256 << 20)),
+        )
         .layer(middleware::from_fn_with_state(app.clone(), authorize))
         .route("/healthz", get(|| async { "ok" }))
         .with_state(app)
@@ -39,7 +42,11 @@ async fn authorize(State(app): State<Arc<App>>, request: Request, next: Next) ->
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("");
     if app.key.is_empty() || !constant_time_eq(given.as_bytes(), app.key.as_bytes()) {
-        return (StatusCode::UNAUTHORIZED, axum::Json(json!({"error": "invalid management key"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(json!({"error": "invalid management key"})),
+        )
+            .into_response();
     }
     next.run(request).await
 }
@@ -53,7 +60,13 @@ async fn push(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes) -> R
         .get(header::CONTENT_ENCODING)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.eq_ignore_ascii_case("gzip"));
-    let bad = |message: &str| (StatusCode::BAD_REQUEST, axum::Json(json!({"error": message}))).into_response();
+    let bad = |message: &str| {
+        (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": message})),
+        )
+            .into_response()
+    };
     let batch = match ingest::decode(&body, gzip) {
         Ok(batch) => batch,
         Err(message) => return bad(message),
@@ -70,12 +83,17 @@ async fn push(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes) -> R
             "receivedAt": chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
         }))
         .into_response(),
-        _ => (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(json!({"error": "could not save usage"}))).into_response(),
+        _ => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({"error": "could not save usage"})),
+        )
+            .into_response(),
     }
 }
 
 async fn events(State(app): State<Arc<App>>) -> Response {
-    let frames = ReceiverStream::new(app.deck.stream.subscribe()).map(|frame| Ok::<_, Infallible>(Bytes::from(frame)));
+    let frames = ReceiverStream::new(app.deck.stream.subscribe())
+        .map(|frame| Ok::<_, Infallible>(Bytes::from(frame)));
     Response::builder()
         .header(header::CONTENT_TYPE, "text/event-stream")
         .header(header::CACHE_CONTROL, "no-cache")

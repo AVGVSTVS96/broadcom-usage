@@ -42,7 +42,11 @@ impl App {
             out.extend(follow::go_journals(dir, self.local()));
         }
         if let Some(path) = &self.config.receipts {
-            out.push(Followed { path: path.clone(), device: self.local().clone(), format: Format::Receipts });
+            out.push(Followed {
+                path: path.clone(),
+                device: self.local().clone(),
+                format: Format::Receipts,
+            });
         }
         out
     }
@@ -80,9 +84,15 @@ pub fn start(app: Arc<App>) {
         std::thread::spawn(move || collect(&app));
     }
     if !app.config.github_repos.is_empty() {
-        let github = GitHub::new(&app.config.state_dir, app.config.github_repos.clone(), app.pricing.clone());
+        let github = GitHub::new(
+            &app.config.state_dir,
+            app.config.github_repos.clone(),
+            app.pricing.clone(),
+        );
         let store = app.store.clone();
-        tokio::spawn(github.run(move |batch| tokio::task::block_in_place(|| store.apply(&batch, true).map(|_| ()))));
+        tokio::spawn(github.run(move |batch| {
+            tokio::task::block_in_place(|| store.apply(&batch, true).map(|_| ()))
+        }));
     }
     tokio::spawn({
         let deck = deck.clone();
@@ -96,17 +106,25 @@ pub fn start(app: Arc<App>) {
         }
     });
     let pool = app.config.pool_dir.clone();
-    spawn_watch(vec![(pool.clone(), false), (pool.join("plans"), false)], Duration::from_secs(1), {
-        let deck = deck.clone();
-        move || {
-            deck.usage_changed();
-            deck.publish();
-        }
-    });
+    spawn_watch(
+        vec![(pool.clone(), false), (pool.join("plans"), false)],
+        Duration::from_secs(1),
+        {
+            let deck = deck.clone();
+            move || {
+                deck.usage_changed();
+                deck.publish();
+            }
+        },
+    );
     let claude = &app.config.claude;
     let hex_state = app.config.hex.join("state");
     spawn_watch(
-        vec![(claude.join("sessions"), false), (claude.join("jobs"), true), (hex_state, true)],
+        vec![
+            (claude.join("sessions"), false),
+            (claude.join("jobs"), true),
+            (hex_state, true),
+        ],
         Duration::from_millis(250),
         {
             let deck = deck.clone();
@@ -116,7 +134,10 @@ pub fn start(app: Arc<App>) {
             }
         },
     );
-    tokio::spawn(follow_hex(deck.clone(), app.config.hex.join(".hex/bin/hex")));
+    tokio::spawn(follow_hex(
+        deck.clone(),
+        app.config.hex.join(".hex/bin/hex"),
+    ));
     tokio::spawn({
         let deck = deck.clone();
         async move {
@@ -150,17 +171,23 @@ pub fn start(app: Arc<App>) {
 /// Collects this machine's transcripts into the store, then again whenever they change:
 /// once writes go quiet for a second, or five seconds into a steady stream.
 fn collect(app: &App) {
-    let sources = crate::collect::Sources { device_id: app.local().id.clone(), ..Default::default() };
-    let mut collector = match crate::collect::Collector::open(sources, &app.config.state_dir.join("collect.db")) {
-        Ok(c) => c,
-        Err(e) => return tracing::error!("collector: {e:#}"),
+    let sources = crate::collect::Sources {
+        device_id: app.local().id.clone(),
+        ..Default::default()
     };
+    let mut collector =
+        match crate::collect::Collector::open(sources, &app.config.state_dir.join("collect.db")) {
+            Ok(c) => c,
+            Err(e) => return tracing::error!("collector: {e:#}"),
+        };
     let (tx, rx) = std::sync::mpsc::channel();
-    let Ok(mut watcher) = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        if event.is_ok_and(|e| !matches!(e.kind, notify::EventKind::Access(_))) {
-            let _ = tx.send(());
-        }
-    }) else {
+    let Ok(mut watcher) =
+        notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+            if event.is_ok_and(|e| !matches!(e.kind, notify::EventKind::Access(_))) {
+                let _ = tx.send(());
+            }
+        })
+    else {
         return;
     };
     for root in collector.roots() {
@@ -175,7 +202,16 @@ fn collect(app: &App) {
             for warning in &c.warnings {
                 tracing::warn!("collector: {warning}");
             }
-            app.store.apply(&Batch { device, events: c.events, deleted_ids: c.retracted_ids }, false).map(|_| ())
+            app.store
+                .apply(
+                    &Batch {
+                        device,
+                        events: c.events,
+                        deleted_ids: c.retracted_ids,
+                    },
+                    false,
+                )
+                .map(|_| ())
         });
         if let Err(e) = result {
             tracing::warn!("collecting: {e:#}");
@@ -184,7 +220,10 @@ fn collect(app: &App) {
             return;
         }
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while let Ok(()) = rx.recv_timeout(Duration::from_secs(1).min(deadline.saturating_duration_since(std::time::Instant::now()))) {
+        while let Ok(()) = rx.recv_timeout(
+            Duration::from_secs(1)
+                .min(deadline.saturating_duration_since(std::time::Instant::now())),
+        ) {
             if std::time::Instant::now() >= deadline {
                 break;
             }
@@ -204,7 +243,11 @@ fn spawn_watch(paths: Vec<(PathBuf, bool)>, wait: Duration, changed: impl Fn() +
     });
     let Ok(mut watcher) = watcher else { return };
     for (path, children) in &paths {
-        let mode = if *children { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
+        let mode = if *children {
+            RecursiveMode::Recursive
+        } else {
+            RecursiveMode::NonRecursive
+        };
         if let Err(e) = watcher.watch(path, mode) {
             tracing::debug!("watching {}: {e}", path.display());
         }
@@ -253,14 +296,19 @@ async fn follow_hex(deck: Arc<Deck>, hex: PathBuf) {
 /// Catches up whenever a followed file changes: once the writes go quiet for a second,
 /// or five seconds into a steady stream.
 pub async fn follow_files(app: Arc<App>) {
-    let dirs: std::collections::BTreeSet<PathBuf> =
-        app.followed().iter().filter_map(|f| f.path.parent().map(Path::to_path_buf)).collect();
+    let dirs: std::collections::BTreeSet<PathBuf> = app
+        .followed()
+        .iter()
+        .filter_map(|f| f.path.parent().map(Path::to_path_buf))
+        .collect();
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let Ok(mut watcher) = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        if event.is_ok_and(|e| !matches!(e.kind, notify::EventKind::Access(_))) {
-            let _ = tx.send(());
-        }
-    }) else {
+    let Ok(mut watcher) =
+        notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+            if event.is_ok_and(|e| !matches!(e.kind, notify::EventKind::Access(_))) {
+                let _ = tx.send(());
+            }
+        })
+    else {
         return;
     };
     for dir in &dirs {
@@ -293,12 +341,22 @@ fn reply<T: Serialize>(result: Result<T, String>) -> Response {
     let headers = [(header::CACHE_CONTROL, "no-store")];
     match result {
         Ok(value) => (headers, axum::Json(value)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, headers, axum::Json(serde_json::json!({"error": e}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            headers,
+            axum::Json(serde_json::json!({"error": e})),
+        )
+            .into_response(),
     }
 }
 
 pub async fn usage(State(app): State<Arc<App>>, RawQuery(query): RawQuery) -> Response {
-    reply(app.deck.usage(query.as_deref().unwrap_or("")).await.map_err(|e| e.to_string()))
+    reply(
+        app.deck
+            .usage(query.as_deref().unwrap_or(""))
+            .await
+            .map_err(|e| e.to_string()),
+    )
 }
 
 pub async fn sessions(State(app): State<Arc<App>>, RawQuery(query): RawQuery) -> Response {

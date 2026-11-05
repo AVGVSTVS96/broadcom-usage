@@ -60,11 +60,23 @@ mod tests {
     use crate::event::{Device, Event};
 
     fn batch(device: &str, events: Vec<Event>) -> Batch {
-        Batch { device: Device { id: device.into(), label: "laptop".into(), synced_at: None }, events, deleted_ids: vec![] }
+        Batch {
+            device: Device {
+                id: device.into(),
+                label: "laptop".into(),
+                synced_at: None,
+            },
+            events,
+            deleted_ids: vec![],
+        }
     }
 
     fn event() -> Event {
-        Event { id: "a".into(), timestamp: "2026-11-01T00:00:00Z".into(), ..Default::default() }
+        Event {
+            id: "a".into(),
+            timestamp: "2026-11-01T00:00:00Z".into(),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -72,9 +84,45 @@ mod tests {
         assert_eq!(validate(&batch("laptop", vec![event()]), "server"), None);
         assert!(validate(&batch("server", vec![]), "server").is_some());
         assert!(validate(&batch(" ", vec![]), "server").is_some());
-        assert!(validate(&batch("laptop", vec![Event { timestamp: "soon".into(), ..event() }]), "server").is_some());
-        assert!(validate(&batch("laptop", vec![Event { output_tokens: -1, ..event() }]), "server").is_some());
-        assert!(validate(&batch("laptop", vec![Event { cost_usd: f64::NAN, ..event() }]), "server").is_some());
+        assert!(
+            validate(
+                &batch(
+                    "laptop",
+                    vec![Event {
+                        timestamp: "soon".into(),
+                        ..event()
+                    }]
+                ),
+                "server"
+            )
+            .is_some()
+        );
+        assert!(
+            validate(
+                &batch(
+                    "laptop",
+                    vec![Event {
+                        output_tokens: -1,
+                        ..event()
+                    }]
+                ),
+                "server"
+            )
+            .is_some()
+        );
+        assert!(
+            validate(
+                &batch(
+                    "laptop",
+                    vec![Event {
+                        cost_usd: f64::NAN,
+                        ..event()
+                    }]
+                ),
+                "server"
+            )
+            .is_some()
+        );
         assert!(validate(&batch("laptop", vec![event(); MAX_RECORDS + 1]), "server").is_some());
     }
 
