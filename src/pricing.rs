@@ -104,6 +104,16 @@ pub struct Policy {
     ruled: HashMap<String, Ruled>,
 }
 
+/// Bumped whenever how a record is priced changes, so stored prices are worked out again.
+const PRICING_RULES: u32 = 2;
+
+impl Policy {
+    /// What a stored price was worked out with: this catalog and rules, under this code.
+    pub fn priced_with(&self) -> String {
+        format!("{}/{PRICING_RULES}", self.revision)
+    }
+}
+
 static BUNDLED: LazyLock<Catalog> = LazyLock::new(|| {
     serde_json::from_str(include_str!("pricing.json"))
         .expect("the bundled pricing.json is a catalog")
@@ -354,7 +364,7 @@ fn custom_rates(r: &RuleRates) -> Rates {
 
 fn tier_suffix(tier: &str) -> Option<&'static str> {
     Some(match tier.trim_matches(js_space).to_lowercase().as_str() {
-        "" | "default" | "standard" => "",
+        "" | "default" | "standard" | "auto" => "",
         "priority" | "fast" => "_priority",
         "ultrafast" => "_ultrafast",
         "flex" => "_flex",
@@ -913,6 +923,11 @@ mod tests {
         assert!(
             known && near(cost, 0.24374999999999997),
             "opus standard {cost} {known}"
+        );
+        assert_eq!(
+            policy.estimate_cost(&opus, 2000, "auto"),
+            (cost, known),
+            "auto bills as standard"
         );
         assert!(
             !policy.estimate_cost(&opus, 0, "priority").1,

@@ -82,6 +82,10 @@ CREATE INDEX IF NOT EXISTS events_session ON events (harness, session_id, ts);
 CREATE INDEX IF NOT EXISTS events_response ON events (harness, response_key) WHERE response_key IS NOT NULL;
 DROP INDEX IF EXISTS events_request;
 CREATE INDEX IF NOT EXISTS events_request_raw ON events (harness, request_key, raw_model) WHERE request_key IS NOT NULL;
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS cursors (
   path TEXT PRIMARY KEY,
   inode INTEGER NOT NULL,
@@ -268,8 +272,31 @@ impl Store {
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<BTreeSet<(String, String)>>>()?;
         Resolver::new(&tx, &self.local.id, &policy)?.resolve(&keys)?;
+        tx.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('priced_with', ?1)",
+            [policy.priced_with()],
+        )?;
         tx.commit()?;
         self.changed();
+        Ok(())
+    }
+
+    /// Prices everything again if it was priced with another catalog, rules or code.
+    pub fn reprice_if_stale(&self) -> Result<()> {
+        let policy = self.policy.lock().unwrap().clone();
+        let stored: Option<String> = self
+            .read
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'priced_with'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if stored.as_deref() != Some(policy.priced_with().as_str()) {
+            self.set_policy(policy)?;
+        }
         Ok(())
     }
 

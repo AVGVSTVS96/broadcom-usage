@@ -66,6 +66,14 @@ impl App {
 /// Starts everything that keeps the store and the deck current.
 pub fn start(app: Arc<App>) {
     let deck = app.deck.clone();
+    tokio::task::spawn_blocking({
+        let store = app.store.clone();
+        move || {
+            if let Err(e) = store.reprice_if_stale() {
+                tracing::warn!("repricing: {e:#}");
+            }
+        }
+    });
     tokio::spawn({
         let store = app.store.clone();
         app.pricing.clone().run(move |policy| {

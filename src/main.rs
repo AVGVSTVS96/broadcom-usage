@@ -102,8 +102,28 @@ fn dump(app: &App, out: &str) -> Result<()> {
 #[tokio::main]
 async fn serve(app: Arc<App>) -> Result<()> {
     app::start(app.clone());
-    let listener = tokio::net::TcpListener::bind(&app.config.listen).await?;
-    tracing::info!("serving on {}", app.config.listen);
-    axum::serve(listener, server::router(app)).await?;
+    let router = server::router(app.clone());
+    let mut servers = tokio::task::JoinSet::new();
+    for address in app.config.listen.clone() {
+        let router = router.clone();
+        servers.spawn(async move {
+            loop {
+                match tokio::net::TcpListener::bind(&address).await {
+                    Ok(listener) => {
+                        tracing::info!("serving on {address}");
+                        return axum::serve(listener, router).await;
+                    }
+                    Err(e) => {
+                        tracing::warn!("can't listen on {address} yet: {e}");
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    }
+                }
+            }
+        });
+    }
+    servers
+        .join_next()
+        .await
+        .context("nothing to listen on")???;
     Ok(())
 }

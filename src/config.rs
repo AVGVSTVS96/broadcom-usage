@@ -11,7 +11,9 @@ use crate::views::{AgentSdk, ConfiguredPlan};
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Config {
-    pub listen: String,
+    /// One address or several, like loopback plus the tailnet address the Mac pushes to.
+    #[serde(deserialize_with = "one_or_many")]
+    pub listen: Vec<String>,
     /// The usage database, the collector's parse cache and pricing-state.json.
     pub state_dir: PathBuf,
     /// Holds the management key clients send as a bearer token.
@@ -42,6 +44,19 @@ pub struct Config {
     pub github_repos: Vec<String>,
 }
 
+fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Listen {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match Listen::deserialize(d)? {
+        Listen::One(a) => vec![a],
+        Listen::Many(a) => a,
+    })
+}
+
 fn home() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -59,7 +74,7 @@ impl Default for Config {
     fn default() -> Self {
         let home = home();
         Self {
-            listen: "127.0.0.1:8320".into(),
+            listen: vec!["127.0.0.1:8320".into()],
             state_dir: home.join(".local/state/broadcom-usage"),
             key_file: home.join(".config/cliproxyapi/key"),
             device_id: None,
