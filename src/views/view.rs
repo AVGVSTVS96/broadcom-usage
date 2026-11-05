@@ -1,18 +1,39 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
+
+use foldhash::{HashMap, HashMapExt, HashSet, HashSetExt};
 
 use serde::Serialize;
 
-use super::attribution::agent_sdk;
-use super::identity::{Names, SessionRef, Who, agent_of, app_of, basename, label_of, prefix, row_of, who_of};
+use super::attribution::AgentSdk;
+use super::identity::{
+    Names, SessionRef, Who, agent_of, app_of, basename, label_of, prefix, row_of, who_of,
+};
 use super::live::LiveSession;
 use super::sessions::{Amount, Amounts, NO_ACCOUNT, Period, Session, SessionUsage};
 use super::timeframe::Range;
 use crate::event::Device;
 
 const COLORS: usize = 7;
-const GROUPINGS: [&str; 8] = ["agent", "session", "project", "model", "harness", "entrypoint", "device", "account"];
+const GROUPINGS: [&str; 8] = [
+    "agent",
+    "session",
+    "project",
+    "model",
+    "harness",
+    "entrypoint",
+    "device",
+    "account",
+];
 const MEASURES: [&str; 5] = ["tokens", "api", "plan", "fiveHour", "week"];
-const DIMENSIONS: [&str; 7] = ["app", "harness", "entrypoint", "model", "project", "device", "account"];
+const DIMENSIONS: [&str; 7] = [
+    "app",
+    "harness",
+    "entrypoint",
+    "model",
+    "project",
+    "device",
+    "account",
+];
 
 /// What the Usage page asks for.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -29,19 +50,29 @@ pub struct Query {
 }
 
 fn pick(value: &str, options: &[&str], fallback: &str) -> String {
-    options.iter().find(|o| **o == value).unwrap_or(&fallback).to_string()
+    options
+        .iter()
+        .find(|o| **o == value)
+        .unwrap_or(&fallback)
+        .to_string()
 }
 
 /// Reads a Usage query from the page's URL query string.
 pub fn parse_query(query: &str) -> Query {
     let mut params: HashMap<String, String> = HashMap::new();
     for (key, value) in form_urlencoded::parse(query.as_bytes()) {
-        params.entry(key.into_owned()).or_insert_with(|| value.into_owned());
+        params
+            .entry(key.into_owned())
+            .or_insert_with(|| value.into_owned());
     }
     let get = |key: &str| params.get(key).map(String::as_str).unwrap_or_default();
     let mut filter = BTreeMap::new();
     for dimension in DIMENSIONS {
-        let mut values: Vec<String> = get(&format!("w.{dimension}")).split(',').filter(|v| !v.is_empty()).map(String::from).collect();
+        let mut values: Vec<String> = get(&format!("w.{dimension}"))
+            .split(',')
+            .filter(|v| !v.is_empty())
+            .map(String::from)
+            .collect();
         if !values.is_empty() {
             values.sort();
             filter.insert(dimension.to_string(), values);
@@ -53,7 +84,11 @@ pub fn parse_query(query: &str) -> Query {
         measure: pick(get("measure"), &MEASURES, "api"),
         filter,
         search: get("q").trim().to_string(),
-        limit: get("limit").parse::<i64>().ok().filter(|n| *n > 0).map_or(50, |n| n as usize),
+        limit: get("limit")
+            .parse::<i64>()
+            .ok()
+            .filter(|n| *n > 0)
+            .map_or(50, |n| n as usize),
         within: Some(get("within").to_string()).filter(|w| !w.is_empty()),
     }
 }
@@ -194,8 +229,8 @@ pub struct UsageView {
 /// What people call accounts and devices, by id.
 #[derive(Debug, Clone, Default)]
 pub struct Labels {
-    pub accounts: HashMap<String, String>,
-    pub devices: HashMap<String, String>,
+    pub accounts: std::collections::HashMap<String, String>,
+    pub devices: std::collections::HashMap<String, String>,
 }
 
 /// One session's share of one model on one account. Parts of a session sum back to it exactly.
@@ -220,7 +255,9 @@ fn ratio(part: f64, whole: f64) -> f64 {
 /// Field by field, the part of `whole` that is both `a` and `b`, assuming they overlap in proportion.
 fn overlap_of(a: &Amount, b: &Amount, whole: &Amount) -> Amount {
     let (x, y, w) = (a.fields(), b.fields(), whole.fields());
-    Amount::from_fields(std::array::from_fn(|i| if w[i] != 0.0 { x[i] * y[i] / w[i] } else { 0.0 }))
+    Amount::from_fields(std::array::from_fn(|i| {
+        if w[i] != 0.0 { x[i] * y[i] / w[i] } else { 0.0 }
+    }))
 }
 
 /// Splits a session into model × account parts. The amounts per model and per account
@@ -229,13 +266,26 @@ fn overlap_of(a: &Amount, b: &Amount, whole: &Amount) -> Amount {
 pub fn parts_of<'a>(s: &'a Session, names: &Names) -> Vec<Part<'a>> {
     let who = who_of(
         names,
-        SessionRef { session_id: &s.session_id, title: s.title.as_deref(), project: &s.project, repository: s.repository.as_deref() },
+        SessionRef {
+            session_id: &s.session_id,
+            title: s.title.as_deref(),
+            project: &s.project,
+            repository: s.repository.as_deref(),
+        },
     );
     let agent = row_of(&who, &s.key);
     let amount = s.amount;
-    let only = |key: &str| Amounts::from([(key.to_string(), amount)]);
-    let models = if s.models.is_empty() { only("unknown") } else { s.models.clone() };
-    let amounts = if s.accounts.is_empty() { only(NO_ACCOUNT) } else { s.accounts.clone() };
+    let only = |key: &str| Amounts::from_iter([(key.to_string(), amount)]);
+    let models = if s.models.is_empty() {
+        only("unknown")
+    } else {
+        s.models.clone()
+    };
+    let amounts = if s.accounts.is_empty() {
+        only(NO_ACCOUNT)
+    } else {
+        s.accounts.clone()
+    };
     let mut kinds = [0.0; 2];
     let mut charged: HashMap<&str, [f64; 2]> = HashMap::new();
     let mut accounts: Vec<&str> = amounts.keys().map(String::as_str).collect();
@@ -270,9 +320,12 @@ pub fn parts_of<'a>(s: &'a Session, names: &Names) -> Vec<Part<'a>> {
                 five_hour: points[0] * api,
                 week: points[1] * api,
                 scale: [
-                    ratio(model_amount.tokens, amount.tokens) * ratio(account_amount.tokens, amount.tokens),
-                    ratio(model_amount.api_usd, amount.api_usd) * ratio(account_amount.api_usd, amount.api_usd),
-                    ratio(model_amount.plan_usd, amount.plan_usd) * ratio(account_amount.plan_usd, amount.plan_usd),
+                    ratio(model_amount.tokens, amount.tokens)
+                        * ratio(account_amount.tokens, amount.tokens),
+                    ratio(model_amount.api_usd, amount.api_usd)
+                        * ratio(account_amount.api_usd, amount.api_usd),
+                    ratio(model_amount.plan_usd, amount.plan_usd)
+                        * ratio(account_amount.plan_usd, amount.plan_usd),
                     ratio(points[0], kinds[0]) * api,
                     ratio(points[1], kinds[1]) * api,
                 ],
@@ -283,7 +336,11 @@ pub fn parts_of<'a>(s: &'a Session, names: &Names) -> Vec<Part<'a>> {
 }
 
 fn entrypoint_of(s: &Session) -> &str {
-    if s.entrypoint.is_empty() { "unknown" } else { &s.entrypoint }
+    if s.entrypoint.is_empty() {
+        "unknown"
+    } else {
+        &s.entrypoint
+    }
 }
 
 fn dimension_of<'p>(dimension: &str, p: &'p Part) -> &'p str {
@@ -344,7 +401,11 @@ fn describe(by: &str, p: &Part, labels: &Labels) -> (String, String, Option<Who>
             let (label, detail) = label_of(&p.who);
             let label = p.session.title.clone().unwrap_or(label);
             if p.who.kind == "action" {
-                return (label, format!("{} · {detail}", p.who.repo), Some(p.who.clone()));
+                return (
+                    label,
+                    format!("{} · {detail}", p.who.repo),
+                    Some(p.who.clone()),
+                );
             }
             let id = prefix(&p.session.session_id, 8);
             let detail = [basename(&p.session.project), &p.session.harness, id].join(" · ");
@@ -353,9 +414,17 @@ fn describe(by: &str, p: &Part, labels: &Labels) -> (String, String, Option<Who>
         "project" => {
             let project = &p.session.project;
             let name = basename(project);
-            (if name.is_empty() { project } else { name }.to_string(), project.clone(), None)
+            (
+                if name.is_empty() { project } else { name }.to_string(),
+                project.clone(),
+                None,
+            )
         }
-        _ => (name_of(by, dimension_of(by, p), labels), String::new(), None),
+        _ => (
+            name_of(by, dimension_of(by, p), labels),
+            String::new(),
+            None,
+        ),
     }
 }
 
@@ -376,7 +445,7 @@ struct Share {
     week: f64,
 }
 
-struct Group {
+struct Group<'a> {
     key: String,
     label: String,
     detail: String,
@@ -386,15 +455,22 @@ struct Group {
     week: f64,
     accounts: Vec<String>,
     by_account: HashMap<String, Share>,
-    sessions: HashSet<String>,
-    session_ids: HashSet<String>,
+    seen: HashSet<*const Session>,
+    sessions: Vec<&'a Session>,
     last_active_at: f64,
     series: Vec<f64>,
     entrypoint: String,
     sdk_api: f64,
 }
 
-fn group_parts<'p>(parts: impl IntoIterator<Item = &'p Part<'p>>, by: &str, measure: &str, buckets: usize, labels: &Labels) -> Vec<Group> {
+fn group_parts<'p>(
+    parts: impl IntoIterator<Item = &'p Part<'p>>,
+    by: &str,
+    measure: &str,
+    buckets: usize,
+    labels: &Labels,
+    sdk: &AgentSdk,
+) -> Vec<Group<'p>> {
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut groups: Vec<Group> = Vec::new();
     let column = series_column(measure);
@@ -415,8 +491,8 @@ fn group_parts<'p>(parts: impl IntoIterator<Item = &'p Part<'p>>, by: &str, meas
                     week: 0.0,
                     accounts: Vec::new(),
                     by_account: HashMap::new(),
-                    sessions: HashSet::new(),
-                    session_ids: HashSet::new(),
+                    seen: HashSet::new(),
+                    sessions: Vec::new(),
                     last_active_at: 0.0,
                     series: vec![0.0; buckets],
                     entrypoint: String::new(),
@@ -432,13 +508,14 @@ fn group_parts<'p>(parts: impl IntoIterator<Item = &'p Part<'p>>, by: &str, meas
         } else if !via.is_empty() {
             g.entrypoint = "mixed".into();
         }
-        if agent_sdk(via) {
+        if sdk.includes(via) {
             g.sdk_api += p.amount.api_usd;
         }
         g.five_hour += p.five_hour;
         g.week += p.week;
-        g.sessions.insert(p.session.key.clone());
-        g.session_ids.insert(p.session.session_id.clone());
+        if g.seen.insert(p.session) {
+            g.sessions.push(p.session);
+        }
         g.last_active_at = g.last_active_at.max(p.session.last_at);
         if p.amount.tokens != 0.0 || p.five_hour != 0.0 || p.week != 0.0 {
             let share = g.by_account.entry(p.account.clone()).or_insert_with(|| {
@@ -456,6 +533,28 @@ fn group_parts<'p>(parts: impl IntoIterator<Item = &'p Part<'p>>, by: &str, meas
         }
     }
     groups
+}
+
+/// The color slot of each of the unfiltered range's top groups by API value.
+fn top_by_api(all: &[Part], by: &str) -> HashMap<String, usize> {
+    let mut index: HashMap<String, usize> = HashMap::new();
+    let mut api: Vec<(String, f64)> = Vec::new();
+    for p in all {
+        let key = group_key(by, p);
+        match index.get(&key) {
+            Some(&i) => api[i].1 += p.amount.api_usd,
+            None => {
+                index.insert(key.clone(), api.len());
+                api.push((key, p.amount.api_usd));
+            }
+        }
+    }
+    api.sort_by(|a, b| descending(a.1, b.1));
+    api.into_iter()
+        .take(COLORS)
+        .enumerate()
+        .map(|(slot, (key, _))| (key, slot))
+        .collect()
 }
 
 fn value_of(g: &Group, measure: &str) -> f64 {
@@ -477,43 +576,72 @@ fn hit_rate(a: &Amount) -> f64 {
 }
 
 /// Builds the Usage page for one query over a range's session usage and its parts.
-pub fn usage_view(tracked: &SessionUsage, all: &[Part], labels: &Labels, q: &Query) -> UsageView {
+pub fn usage_view(
+    tracked: &SessionUsage,
+    all: &[Part],
+    labels: &Labels,
+    q: &Query,
+    sdk: &AgentSdk,
+) -> UsageView {
     let buckets = tracked.buckets.len();
     let parts: Vec<&Part> = all
         .iter()
         .filter(|p| {
             q.within.as_ref().is_none_or(|w| p.agent == *w)
-                && q.filter.iter().all(|(dimension, values)| values.iter().any(|v| v == dimension_of(dimension, p)))
+                && q.filter.iter().all(|(dimension, values)| {
+                    values.iter().any(|v| v == dimension_of(dimension, p))
+                })
         })
         .collect();
 
-    let mut by_api = group_parts(all, &q.by, "api", 0, labels);
-    by_api.sort_by(|a, b| descending(a.amount.api_usd, b.amount.api_usd));
-    let mut color: HashMap<String, usize> = by_api.iter().take(COLORS).enumerate().map(|(i, g)| (g.key.clone(), i)).collect();
+    let mut color = top_by_api(all, &q.by);
 
-    let mut groups = group_parts(parts.iter().copied(), &q.by, &q.measure, buckets, labels);
+    let mut groups = group_parts(
+        parts.iter().copied(),
+        &q.by,
+        &q.measure,
+        buckets,
+        labels,
+        sdk,
+    );
     groups.sort_by(|a, b| {
-        descending(value_of(a, &q.measure), value_of(b, &q.measure)).then_with(|| descending(a.amount.api_usd, b.amount.api_usd))
+        descending(value_of(a, &q.measure), value_of(b, &q.measure))
+            .then_with(|| descending(a.amount.api_usd, b.amount.api_usd))
     });
 
     let needle = q.search.to_lowercase();
     let shown: Vec<&Group> = groups
         .iter()
-        .filter(|g| needle.is_empty() || format!("{}\n{}", g.label, g.detail).to_lowercase().contains(&needle))
+        .filter(|g| {
+            needle.is_empty()
+                || format!("{}\n{}", g.label, g.detail)
+                    .to_lowercase()
+                    .contains(&needle)
+        })
         .collect();
     let limits = !tracked.windows.is_empty();
-    let points = |five: f64, week: f64| if limits { Points { five_hour: Some(five), week: Some(week) } } else { Points::default() };
+    let points = |five: f64, week: f64| {
+        if limits {
+            Points {
+                five_hour: Some(five),
+                week: Some(week),
+            }
+        } else {
+            Points::default()
+        }
+    };
 
     let mut total = Amount::default();
     let mut total_sessions = HashSet::new();
-    let (mut total_five, mut total_week, mut named, mut sdk_api, mut sdk_five) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    let (mut total_five, mut total_week, mut named, mut sdk_api, mut sdk_five) =
+        (0.0, 0.0, 0.0, 0.0, 0.0);
     for p in &parts {
         total.add(&p.amount);
-        if agent_sdk(&p.session.entrypoint) {
+        if sdk.includes(&p.session.entrypoint) {
             sdk_api += p.amount.api_usd;
             sdk_five += p.five_hour;
         }
-        total_sessions.insert(p.session.key.as_str());
+        total_sessions.insert(p.session as *const Session);
         total_five += p.five_hour;
         total_week += p.week;
         if p.who.kind != "project" {
@@ -522,7 +650,10 @@ pub fn usage_view(tracked: &SessionUsage, all: &[Part], labels: &Labels, q: &Que
     }
 
     let top = &groups[..groups.len().min(COLORS)];
-    let taken: HashSet<usize> = top.iter().filter_map(|g| color.get(&g.key).copied()).collect();
+    let taken: HashSet<usize> = top
+        .iter()
+        .filter_map(|g| color.get(&g.key).copied())
+        .collect();
     let mut free = (0..COLORS).filter(|slot| !taken.contains(slot));
     for g in top {
         if !color.contains_key(&g.key) {
@@ -532,15 +663,28 @@ pub fn usage_view(tracked: &SessionUsage, all: &[Part], labels: &Labels, q: &Que
     let color_of = |key: &str| color.get(key).copied().unwrap_or(COLORS);
     let mut series: Vec<Series> = top
         .iter()
-        .map(|g| Series { key: g.key.clone(), label: g.label.clone(), color: color_of(&g.key), values: g.series.clone() })
+        .map(|g| Series {
+            key: g.key.clone(),
+            label: g.label.clone(),
+            color: color_of(&g.key),
+            values: g.series.clone(),
+        })
         .collect();
     let rest = &groups[top.len()..];
     if !rest.is_empty() {
         let mut values = vec![0.0; buckets];
         for g in rest {
-            values.iter_mut().zip(&g.series).for_each(|(sum, v)| *sum += v);
+            values
+                .iter_mut()
+                .zip(&g.series)
+                .for_each(|(sum, v)| *sum += v);
         }
-        series.push(Series { key: "rest".into(), label: "Everything else".into(), color: COLORS, values });
+        series.push(Series {
+            key: "rest".into(),
+            label: "Everything else".into(),
+            color: COLORS,
+            values,
+        });
     }
 
     let rows = shown
@@ -553,7 +697,10 @@ pub fn usage_view(tracked: &SessionUsage, all: &[Part], labels: &Labels, q: &Que
                 .into_iter()
                 .map(|account| {
                     let share = &g.by_account[&account];
-                    AccountPoints { points: points(share.five_hour, share.week), account }
+                    AccountPoints {
+                        points: points(share.five_hour, share.week),
+                        account,
+                    }
                 })
                 .collect();
             Row {
@@ -571,7 +718,7 @@ pub fn usage_view(tracked: &SessionUsage, all: &[Part], labels: &Labels, q: &Que
                 live: None,
                 entrypoint: g.entrypoint.clone(),
                 agent_sdk: ratio(g.sdk_api, g.amount.api_usd),
-                session_ids: g.session_ids.clone(),
+                session_ids: g.sessions.iter().map(|s| s.session_id.clone()).collect(),
             }
         })
         .collect();
@@ -579,9 +726,16 @@ pub fn usage_view(tracked: &SessionUsage, all: &[Part], labels: &Labels, q: &Que
     let mut unassigned: Vec<Unassigned> = Vec::new();
     let mut since: Option<f64> = None;
     for w in &tracked.windows {
-        match unassigned.iter_mut().find(|u| u.account == w.account && u.kind == w.kind) {
+        match unassigned
+            .iter_mut()
+            .find(|u| u.account == w.account && u.kind == w.kind)
+        {
             Some(u) => u.points += w.unassigned,
-            None => unassigned.push(Unassigned { account: w.account.clone(), kind: w.kind.clone(), points: w.unassigned }),
+            None => unassigned.push(Unassigned {
+                account: w.account.clone(),
+                kind: w.kind.clone(),
+                points: w.unassigned,
+            }),
         }
         if since.is_none_or(|s| w.since < s) {
             since = Some(w.since);
@@ -591,18 +745,31 @@ pub fn usage_view(tracked: &SessionUsage, all: &[Part], labels: &Labels, q: &Que
 
     let mut facets = BTreeMap::new();
     for dimension in DIMENSIONS {
-        let mut found: Vec<(Facet, HashSet<&str>)> = Vec::new();
+        let mut found: Vec<(Facet, HashSet<*const Session>)> = Vec::new();
         let mut at: HashMap<&str, usize> = HashMap::new();
         for p in all {
             let value = dimension_of(dimension, p);
             let j = *at.entry(value).or_insert_with(|| {
-                found.push((Facet { id: value.into(), label: name_of(dimension, value, labels), count: 0 }, HashSet::new()));
+                found.push((
+                    Facet {
+                        id: value.into(),
+                        label: name_of(dimension, value, labels),
+                        count: 0,
+                    },
+                    HashSet::new(),
+                ));
                 found.len() - 1
             });
-            found[j].1.insert(&p.session.key);
+            found[j].1.insert(p.session);
         }
-        let mut list: Vec<Facet> = found.into_iter().map(|(facet, sessions)| Facet { count: sessions.len(), ..facet }).collect();
-        list.sort_by(|a, b| b.count.cmp(&a.count));
+        let mut list: Vec<Facet> = found
+            .into_iter()
+            .map(|(facet, sessions)| Facet {
+                count: sessions.len(),
+                ..facet
+            })
+            .collect();
+        list.sort_by_key(|facet| std::cmp::Reverse(facet.count));
         list.truncate(100);
         facets.insert(dimension.to_string(), list);
     }
@@ -610,20 +777,40 @@ pub fn usage_view(tracked: &SessionUsage, all: &[Part], labels: &Labels, q: &Que
     UsageView {
         query: q.clone(),
         period: tracked.period.clone(),
-        totals: Totals { amount: total, sessions: total_sessions.len(), cache_hit_rate: hit_rate(&total), points: points(total_five, total_week) },
+        totals: Totals {
+            amount: total,
+            sessions: total_sessions.len(),
+            cache_hit_rate: hit_rate(&total),
+            points: points(total_five, total_week),
+        },
         previous: (q.filter.is_empty() && q.within.is_none()).then(|| Totals {
             amount: tracked.previous.amount,
             sessions: tracked.previous.sessions,
             cache_hit_rate: hit_rate(&tracked.previous.amount),
             points: Points::default(),
         }),
-        buckets: tracked.buckets.iter().map(|&at| Bucket { at, size: tracked.bucket.clone() }).collect(),
+        buckets: tracked
+            .buckets
+            .iter()
+            .map(|&at| Bucket {
+                at,
+                size: tracked.bucket.clone(),
+            })
+            .collect(),
         series,
         rows,
         row_count: shown.len(),
-        coverage: Coverage { named_api_usd: named, total_api_usd: total.api_usd, limits_since: since, unassigned },
+        coverage: Coverage {
+            named_api_usd: named,
+            total_api_usd: total.api_usd,
+            limits_since: since,
+            unassigned,
+        },
         facets,
-        sources: Sources { devices: tracked.devices.clone(), proxy_since: None },
+        sources: Sources {
+            devices: tracked.devices.clone(),
+            proxy_since: None,
+        },
         agent_sdk: AgentSdkUsage {
             api_usd: sdk_api,
             share: ratio(sdk_api, total.api_usd),
@@ -639,7 +826,13 @@ pub fn proxy_since(events: &[crate::event::Event]) -> Option<f64> {
         .iter()
         .filter(|e| e.is_proxy())
         .map(|e| super::timeframe::parse_millis(&e.timestamp))
-        .fold(None, |since, at| if since.is_none_or(|s| at < s) { Some(at) } else { since })
+        .fold(None, |since, at| {
+            if since.is_none_or(|s| at < s) {
+                Some(at)
+            } else {
+                since
+            }
+        })
 }
 
 /// The browser's order too: a row with a blocked session reads blocked even while another works.
@@ -657,8 +850,15 @@ pub fn with_live(view: &UsageView, live: &[LiveSession]) -> UsageView {
     let mut out = view.clone();
     for row in &mut out.rows {
         row.live = None;
-        for s in live.iter().filter(|s| row.session_ids.contains(&s.id) || s.row == row.key) {
-            if row.live.as_deref().is_none_or(|best| live_strength(&s.state) > live_strength(best)) {
+        for s in live
+            .iter()
+            .filter(|s| row.session_ids.contains(&s.id) || s.row == row.key)
+        {
+            if row
+                .live
+                .as_deref()
+                .is_none_or(|best| live_strength(&s.state) > live_strength(best))
+            {
                 row.live = Some(s.state.clone());
             }
         }

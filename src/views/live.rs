@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use foldhash::{HashMap, HashMapExt, HashSet};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -28,6 +28,10 @@ pub struct LiveSession {
     pub since: f64,
     /// How its Claude Code process was started, from its transcript; "" until it has one.
     pub entrypoint: String,
+    /// What a blocked session waits on: its job's `needs`, else its `detail`.
+    pub question: Option<String>,
+    /// The reply its job suggests.
+    pub reply: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,6 +49,8 @@ pub struct Blocked {
     pub name: Option<String>,
     pub cwd: String,
     pub since: f64,
+    pub question: Option<String>,
+    pub reply: Option<String>,
 }
 
 /// Running Claude sessions, blocked jobs, and which hex apps are connected.
@@ -57,7 +63,11 @@ pub struct Processes {
 
 fn sorted_entries(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(dir)
-        .map(|entries| entries.filter_map(|e| e.ok()?.file_name().into_string().ok()).collect())
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok()?.file_name().into_string().ok())
+                .collect()
+        })
         .unwrap_or_default();
     names.sort();
     names
@@ -84,18 +94,32 @@ pub fn read_processes(claude: &Path, hex: &Path) -> Processes {
         name: Option<String>,
         cwd: Option<String>,
         updated_at: Option<String>,
+        needs: Option<Value>,
+        detail: Option<Value>,
+        suggested_reply: Option<Value>,
     }
+    let text = |value: Option<Value>| {
+        value
+            .and_then(|v| v.as_str().map(String::from))
+            .filter(|s| !s.is_empty())
+    };
 
     let mut found = Processes::default();
     let mut by_id: HashMap<String, Running> = HashMap::new();
     let sessions = claude.join("sessions");
     for name in sorted_entries(&sessions) {
-        let Some(stem) = name.strip_suffix(".json") else { continue };
+        let Some(stem) = name.strip_suffix(".json") else {
+            continue;
+        };
         if stem.is_empty() || !stem.bytes().all(|b| b.is_ascii_digit()) {
             continue;
         }
-        let Some(s) = read_json::<SessionFile>(&sessions.join(&name)) else { continue };
-        let (Some(id), Some(pid)) = (s.session_id.filter(|id| !id.is_empty()), s.pid) else { continue };
+        let Some(s) = read_json::<SessionFile>(&sessions.join(&name)) else {
+            continue;
+        };
+        let (Some(id), Some(pid)) = (s.session_id.filter(|id| !id.is_empty()), s.pid) else {
+            continue;
+        };
         if !Path::new(&format!("/proc/{pid}")).exists() {
             continue;
         }
@@ -109,12 +133,18 @@ pub fn read_processes(claude: &Path, hex: &Path) -> Processes {
         by_id.insert(id, running);
     }
     found.running = by_id.into_values().collect();
-    found.running.sort_by(|a, b| locale_compare(&a.session_id, &b.session_id));
+    found
+        .running
+        .sort_by(|a, b| locale_compare(&a.session_id, &b.session_id));
 
     let jobs = claude.join("jobs");
     for job in sorted_entries(&jobs) {
-        let Some(state) = read_json::<JobState>(&jobs.join(job).join("state.json")) else { continue };
-        let Some(id) = state.session_id.filter(|id| !id.is_empty()) else { continue };
+        let Some(state) = read_json::<JobState>(&jobs.join(job).join("state.json")) else {
+            continue;
+        };
+        let Some(id) = state.session_id.filter(|id| !id.is_empty()) else {
+            continue;
+        };
         if state.state.as_deref() != Some("blocked") {
             continue;
         }
@@ -124,9 +154,13 @@ pub fn read_processes(claude: &Path, hex: &Path) -> Processes {
             name: state.name,
             cwd: state.cwd.unwrap_or_default(),
             since: if since.is_nan() { 0.0 } else { since },
+            question: text(state.needs).or_else(|| text(state.detail)),
+            reply: text(state.suggested_reply),
         });
     }
-    found.blocked.sort_by(|a, b| locale_compare(&a.session_id, &b.session_id));
+    found
+        .blocked
+        .sort_by(|a, b| locale_compare(&a.session_id, &b.session_id));
 
     let apps = hex.join("state");
     for app in sorted_entries(&apps) {
@@ -144,7 +178,9 @@ pub fn seats_of(rows: &[Binding], now: i64) -> Vec<(String, String)> {
     let mut seats: Vec<(String, String)> = Vec::new();
     let mut at: HashMap<&str, usize> = HashMap::new();
     for row in rows {
-        let Some(account) = row.account_id.as_deref().filter(|a| !a.is_empty()) else { continue };
+        let Some(account) = row.account_id.as_deref().filter(|a| !a.is_empty()) else {
+            continue;
+        };
         if row.millis < since {
             continue;
         }
@@ -169,8 +205,16 @@ pub struct Live {
 impl Live {
     /// The stream's keys in order: sessions, then apps.
     pub fn entries(&self) -> Vec<(String, Value)> {
-        let sessions = self.sessions.iter().map(|s| (format!("s:{}", s.id), serde_json::to_value(s).expect("plain data")));
-        let apps = self.apps.iter().map(|(name, connected)| (format!("app:{name}"), json!({ "connected": connected })));
+        let sessions = self.sessions.iter().map(|s| {
+            (
+                format!("s:{}", s.id),
+                serde_json::to_value(s).expect("plain data"),
+            )
+        });
+        let apps = self
+            .apps
+            .iter()
+            .map(|(name, connected)| (format!("app:{name}"), json!({ "connected": connected })));
         sessions.chain(apps).collect()
     }
 }
@@ -186,25 +230,45 @@ pub fn live_map(
     first_seen: &mut HashMap<String, f64>,
     now: i64,
 ) -> Live {
-    let seats: HashMap<&str, &str> = seats.iter().map(|(s, a)| (s.as_str(), a.as_str())).collect();
+    let seats: HashMap<&str, &str> = seats
+        .iter()
+        .map(|(s, a)| (s.as_str(), a.as_str()))
+        .collect();
     let mut known: HashMap<&str, &Session> = HashMap::new();
     let mut projects: HashMap<&str, &str> = HashMap::new();
     for s in tracked.map_or(&[][..], |t| &t.sessions) {
         known.insert(&s.session_id, s);
         projects.insert(&s.cwd, &s.project);
     }
-    let blocked_ids: HashSet<&str> = found.blocked.iter().map(|job| job.session_id.as_str()).collect();
+    let blocked: HashMap<&str, &Blocked> = found
+        .blocked
+        .iter()
+        .map(|job| (job.session_id.as_str(), job))
+        .collect();
 
     let mut session = |id: &str, name: Option<&str>, cwd: &str, state: &str, since: f64| {
         let record = known.get(id).copied();
+        let job = blocked.get(id).copied();
         let seen = *first_seen.entry(id.to_string()).or_insert(now as f64);
         let project = match record {
             Some(r) => r.project.as_str(),
             None => projects.get(cwd).copied().unwrap_or(cwd),
         };
         let who = |title: Option<&str>| match names {
-            Some(names) => who_of(names, SessionRef { session_id: id, title, project, repository: None }),
-            None => Who { kind: "project".into(), project: project.into(), ..Who::default() },
+            Some(names) => who_of(
+                names,
+                SessionRef {
+                    session_id: id,
+                    title,
+                    project,
+                    repository: None,
+                },
+            ),
+            None => Who {
+                kind: "project".into(),
+                project: project.into(),
+                ..Who::default()
+            },
         };
         let title = record.and_then(|r| r.title.as_deref());
         let ranked = who(title);
@@ -236,26 +300,114 @@ pub fn live_map(
             cwd,
             since,
             entrypoint: record.map(|r| r.entrypoint.clone()).unwrap_or_default(),
+            question: job.and_then(|j| j.question.clone()),
+            reply: job.and_then(|j| j.reply.clone()),
         }
     };
 
-    let mut live = Live { sessions: Vec::new(), apps: found.apps.clone() };
+    let mut live = Live {
+        sessions: Vec::new(),
+        apps: found.apps.clone(),
+    };
     for r in &found.running {
-        let state = if blocked_ids.contains(r.session_id.as_str()) {
+        let state = if blocked.contains_key(r.session_id.as_str()) {
             "blocked"
         } else if r.busy {
             "working"
         } else {
             "idle"
         };
-        live.sessions.push(session(&r.session_id, r.name.as_deref(), &r.cwd, state, r.started_at));
+        live.sessions.push(session(
+            &r.session_id,
+            r.name.as_deref(),
+            &r.cwd,
+            state,
+            r.started_at,
+        ));
     }
     for job in &found.blocked {
         if !live.sessions.iter().any(|s| s.id == job.session_id) {
-            live.sessions.push(session(&job.session_id, job.name.as_deref(), &job.cwd, "blocked", job.since));
+            live.sessions.push(session(
+                &job.session_id,
+                job.name.as_deref(),
+                &job.cwd,
+                "blocked",
+                job.since,
+            ));
         }
     }
     let ids: HashSet<&str> = live.sessions.iter().map(|s| s.id.as_str()).collect();
     first_seen.retain(|id, _| ids.contains(id.as_str()));
     live
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn running_and_blocked_sessions() {
+        let root = std::env::temp_dir().join(format!("views-live-{}", std::process::id()));
+        let (claude, hex) = (root.join("claude"), root.join("hex"));
+        let file = |path: std::path::PathBuf, text: &str| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        let pid = std::process::id();
+        file(
+            claude.join(format!("sessions/{pid}.json")),
+            r#"{"sessionId":"busy","pid":PID,"cwd":"/w","status":"busy","startedAt":5}"#
+                .replace("PID", &pid.to_string())
+                .as_str(),
+        );
+        file(
+            claude.join("sessions/1.json"),
+            r#"{"sessionId":"gone","pid":4294967295}"#,
+        );
+        file(
+            claude.join("jobs/j/state.json"),
+            r#"{"state":"blocked","sessionId":"asks","cwd":"/w","updatedAt":"1970-01-01T00:00:01Z","needs":"","detail":"Waiting on a prompt","suggestedReply":"go"}"#,
+        );
+        file(hex.join("state/telegram/sessions/x"), "");
+        file(hex.join("state/telegram/hub.sock"), "");
+        let found = read_processes(&claude, &hex);
+        let live = live_map(
+            &found,
+            &[("asks".into(), "acct".into())],
+            None,
+            None,
+            &mut HashMap::new(),
+            9,
+        );
+        let got: Vec<_> = live
+            .sessions
+            .iter()
+            .map(|s| {
+                (
+                    s.id.as_str(),
+                    s.state.as_str(),
+                    s.since,
+                    s.account.as_deref(),
+                    s.question.as_deref(),
+                    s.reply.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("busy", "working", 5.0, None, None, None),
+                (
+                    "asks",
+                    "blocked",
+                    1000.0,
+                    Some("acct"),
+                    Some("Waiting on a prompt"),
+                    Some("go")
+                )
+            ]
+        );
+        assert_eq!(live.apps, [("telegram".to_string(), true)]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

@@ -81,7 +81,11 @@ struct SavedPlan {
 
 /// The pooled Claude accounts' plans, from the pool's account list (accounts.json)
 /// and the plan each profile reported (`<state>/plans/<id>.json`), then the configured plans.
-pub fn read_plans(accounts_file: Option<&Path>, state_dir: Option<&Path>, configured: &[ConfiguredPlan]) -> Vec<Plan> {
+pub fn read_plans(
+    accounts_file: Option<&Path>,
+    state_dir: Option<&Path>,
+    configured: &[ConfiguredPlan],
+) -> Vec<Plan> {
     let list: AccountList = accounts_file.and_then(read_json).unwrap_or_default();
     let mut seats = Vec::new();
     for account in list.accounts {
@@ -93,13 +97,24 @@ pub fn read_plans(accounts_file: Option<&Path>, state_dir: Option<&Path>, config
             (None, Some(name)) => tier_id(name).to_string(),
             (None, None) => String::new(),
         };
-        if let (Some((name, monthly)), Some(since)) = (claude_tier(&tier), saved.since.filter(|s| *s != 0.0)) {
-            seats.push(Seat { label: account.email, tier: name.into(), monthly_usd: monthly, since });
+        if let (Some((name, monthly)), Some(since)) =
+            (claude_tier(&tier), saved.since.filter(|s| *s != 0.0))
+        {
+            seats.push(Seat {
+                label: account.email,
+                tier: name.into(),
+                monthly_usd: monthly,
+                since,
+            });
         }
     }
     let mut plans = Vec::new();
     if !seats.is_empty() {
-        plans.push(Plan { name: "Claude".into(), providers: vec!["anthropic".into()], seats });
+        plans.push(Plan {
+            name: "Claude".into(),
+            providers: vec!["anthropic".into()],
+            seats,
+        });
     }
     for plan in configured {
         plans.push(Plan {
@@ -118,11 +133,19 @@ pub fn read_plans(accounts_file: Option<&Path>, state_dir: Option<&Path>, config
 
 /// Go's math.Min and Max, where NaN wins.
 fn go_min(a: f64, b: f64) -> f64 {
-    if a.is_nan() || b.is_nan() { f64::NAN } else { a.min(b) }
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else {
+        a.min(b)
+    }
 }
 
 fn go_max(a: f64, b: f64) -> f64 {
-    if a.is_nan() || b.is_nan() { f64::NAN } else { a.max(b) }
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else {
+        a.max(b)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -159,7 +182,11 @@ impl PlanPricing {
         let mut active = Vec::new();
         let mut covers = Vec::new();
         for plan in plans.iter().filter(|plan| !plan.seats.is_empty()) {
-            covers.push(plan.seats.iter().fold(f64::INFINITY, |cover, seat| go_min(cover, seat.since)));
+            covers.push(
+                plan.seats
+                    .iter()
+                    .fold(f64::INFINITY, |cover, seat| go_min(cover, seat.since)),
+            );
             active.push(plan.clone());
         }
         let from = covers.iter().fold(now, |from, cover| go_min(from, *cover));
@@ -168,17 +195,29 @@ impl PlanPricing {
             let mut cursor = month_start(zone, from);
             while (cursor.timestamp_millis() as f64) <= now {
                 let next = next_month(cursor);
-                months.push(Month { start: cursor.timestamp_millis() as f64, end: next.timestamp_millis() as f64 });
+                months.push(Month {
+                    start: cursor.timestamp_millis() as f64,
+                    end: next.timestamp_millis() as f64,
+                });
                 cursor = next;
             }
         }
-        let mut pricing = PlanPricing { active, covers, months, rate: Vec::new(), now };
+        let mut pricing = PlanPricing {
+            active,
+            covers,
+            months,
+            rate: Vec::new(),
+            now,
+        };
         let mut api = vec![vec![0.0; pricing.months.len()]; pricing.active.len()];
         for event in events {
             if !event.cost_known || event.cost_usd <= 0.0 {
                 continue;
             }
-            if let (Some(plan), Some(m)) = (pricing.plan_of(event.provider, event.millis), pricing.month_of(event.millis)) {
+            if let (Some(plan), Some(m)) = (
+                pricing.plan_of(event.provider, event.millis),
+                pricing.month_of(event.millis),
+            ) {
                 api[plan][m] += event.cost_usd;
             }
         }
@@ -192,7 +231,10 @@ impl PlanPricing {
                     .iter()
                     .zip(api)
                     .map(|(m, api)| {
-                        let fees: f64 = plan.seats.iter().fold(0.0, |fees, seat| fees + seat_fees(seat, *m, m.start, now));
+                        let fees: f64 = plan
+                            .seats
+                            .iter()
+                            .fold(0.0, |fees, seat| fees + seat_fees(seat, *m, m.start, now));
                         if *api > 0.0 { fees / api } else { 0.0 }
                     })
                     .collect()
@@ -214,16 +256,25 @@ impl PlanPricing {
                 return Some(i as usize);
             }
         }
-        if millis >= self.now { self.months.len().checked_sub(1) } else { None }
+        if millis >= self.now {
+            self.months.len().checked_sub(1)
+        } else {
+            None
+        }
     }
 
     fn plan_of(&self, provider: &str, millis: f64) -> Option<usize> {
-        (0..self.active.len()).find(|&i| self.active[i].providers.iter().any(|p| p == provider) && millis >= self.covers[i])
+        (0..self.active.len()).find(|&i| {
+            self.active[i].providers.iter().any(|p| p == provider) && millis >= self.covers[i]
+        })
     }
 
     /// A request's plan $.
     pub fn price(&self, event: &Prepared) -> f64 {
-        match (self.plan_of(event.provider, event.millis), self.month_of(event.millis)) {
+        match (
+            self.plan_of(event.provider, event.millis),
+            self.month_of(event.millis),
+        ) {
             (Some(plan), Some(m)) => event.cost_usd * self.rate[plan][m],
             _ => event.cost_usd,
         }
@@ -241,11 +292,19 @@ mod tests {
     fn plan_rate_spreads_monthly_fees() {
         let utc: Tz = "UTC".parse().unwrap();
         let now = utc.with_ymd_and_hms(2026, 10, 16, 0, 0, 0).unwrap();
-        let since = utc.with_ymd_and_hms(2026, 9, 1, 0, 0, 0).unwrap().timestamp_millis() as f64;
+        let since = utc
+            .with_ymd_and_hms(2026, 9, 1, 0, 0, 0)
+            .unwrap()
+            .timestamp_millis() as f64;
         let plans = [Plan {
             name: "Claude".into(),
             providers: vec!["anthropic".into()],
-            seats: vec![Seat { label: String::new(), tier: String::new(), monthly_usd: 310.0, since }],
+            seats: vec![Seat {
+                label: String::new(),
+                tier: String::new(),
+                monthly_usd: 310.0,
+                since,
+            }],
         }];
         let event = |model: &str, at: &str, cost: f64| Event {
             model: model.into(),

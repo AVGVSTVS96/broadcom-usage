@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use foldhash::{HashMap, HashMapExt, HashSet, HashSetExt};
 
 use super::limits::{AccountLookup, KINDS, LimitReading, sorted_readings};
 use super::sessions::Prepared;
@@ -27,28 +27,53 @@ pub struct LimitCharge {
     pub window: [Option<usize>; 2],
 }
 
-/// Whether a request ran on the Agent SDK or `claude -p`.
-pub fn agent_sdk(entrypoint: &str) -> bool {
-    matches!(entrypoint, "sdk-cli" | "sdk-ts" | "sdk-py")
+/// The entrypoints the five-hour meter charges as the Agent SDK or `claude -p`, and how
+/// many interactive tokens one of their tokens costs there.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentSdk {
+    pub factor: f64,
+    pub entrypoints: Vec<String>,
 }
 
-/// What one token of this entrypoint costs on the five-hour meter, in interactive tokens.
-pub fn sdk_weight(entrypoint: &str, factor: f64) -> f64 {
-    if agent_sdk(entrypoint) { factor } else { 1.0 }
+impl Default for AgentSdk {
+    fn default() -> Self {
+        AgentSdk {
+            factor: 1.7,
+            entrypoints: ["sdk-cli", "sdk-ts", "sdk-py"].map(String::from).to_vec(),
+        }
+    }
+}
+
+impl AgentSdk {
+    pub fn includes(&self, entrypoint: &str) -> bool {
+        self.entrypoints.iter().any(|e| e == entrypoint)
+    }
+
+    /// What one token of this entrypoint costs on the five-hour meter, in interactive tokens.
+    pub fn weight(&self, entrypoint: &str) -> f64 {
+        if self.includes(entrypoint) {
+            self.factor
+        } else {
+            1.0
+        }
+    }
 }
 
 /// Splits every rise of an account's limit across the requests that caused it,
 /// weighted by API cost, and for the five-hour limit also by the Agent SDK factor,
-/// since that meter charges Agent SDK tokens `sdk_factor` times more. Per window,
+/// since that meter charges Agent SDK tokens `sdk.factor` times more. Per window,
 /// charges plus unassigned points equal the sampled rise exactly. Charges are
 /// indexed like `events`.
 pub fn attribute_limits(
     readings: &[LimitReading],
     lookup: &AccountLookup,
     events: &[Prepared],
-    sdk_factor: f64,
+    sdk: &AgentSdk,
 ) -> (Vec<LimitWindow>, Vec<Option<LimitCharge>>) {
-    let earliest = readings.iter().map(|row| row.at - PERIODS[1]).fold(f64::INFINITY, f64::min);
+    let earliest = readings
+        .iter()
+        .map(|row| row.at - PERIODS[1])
+        .fold(f64::INFINITY, f64::min);
     let mut bound: HashMap<&str, Vec<usize>> = HashMap::new();
     for (i, event) in events.iter().enumerate() {
         if event.millis < earliest || event.millis.is_nan() {
@@ -71,7 +96,13 @@ pub fn attribute_limits(
         let empty = Vec::new();
         let list = bound.get(window.account.as_str()).unwrap_or(&empty);
         let kind = window.kind;
-        let cost = |e: &Prepared| if kind == 0 { e.cost_usd * sdk_weight(&e.entrypoint, sdk_factor) } else { e.cost_usd };
+        let cost = |e: &Prepared| {
+            if kind == 0 {
+                e.cost_usd * sdk.weight(&e.entrypoint)
+            } else {
+                e.cost_usd
+            }
+        };
         let low = list.partition_point(|&i| events[i].millis <= from);
         let mut end = low;
         let mut weight = 0.0;
@@ -105,22 +136,28 @@ pub fn attribute_limits(
         let rows = sorted_readings(&by_account[account]);
         let monitored_since = rows[0].at;
         let manual_resets = manual_resets_of(&rows);
-        for kind in 0..KINDS.len() {
+        for (kind, period) in PERIODS.into_iter().enumerate() {
             // Rises are charged over the time since the previous reading of this kind,
             // so no request is charged twice, even when readings return to an earlier reset.
             let mut opened: Vec<(usize, f64)> = Vec::new();
             let mut current: Option<usize> = None;
             let (mut last, mut manual_reset_at) = (0.0, 0.0);
             for row in &rows {
-                let Some(value) = row.value(kind) else { continue };
-                let Some(reset) = row.resets_at(kind).or(current.map(|c| windows[opened[c].0].resets_at)) else {
+                let Some(value) = row.value(kind) else {
+                    continue;
+                };
+                let Some(reset) = row
+                    .resets_at(kind)
+                    .or(current.map(|c| windows[opened[c].0].resets_at))
+                else {
                     continue;
                 };
                 if manual_resets.contains(&row.at.to_bits()) {
                     manual_reset_at = row.at;
                 }
                 current = opened.iter().position(|&(w, _)| {
-                    windows[w].since >= manual_reset_at && (reset - windows[w].resets_at).abs() <= SAME_RESET
+                    windows[w].since >= manual_reset_at
+                        && (reset - windows[w].resets_at).abs() <= SAME_RESET
                 });
                 let open = match current {
                     Some(open) => {
@@ -143,10 +180,14 @@ pub fn attribute_limits(
                             unassigned: Vec::new(),
                         });
                         opened.push((w, value));
-                        let start = reset - PERIODS[kind];
+                        let start = reset - period;
                         // A window opened while monitored rose from zero; otherwise its first
                         // reading is a baseline nothing logged here can explain.
-                        if value > 0.0 && start >= monitored_since && start >= last && start < row.at {
+                        if value > 0.0
+                            && start >= monitored_since
+                            && start >= last
+                            && start < row.at
+                        {
                             charge(&mut windows, w, start, row.at, value);
                         } else if value > 0.0 {
                             windows[w].sampled += value;
@@ -175,14 +216,16 @@ fn manual_resets_of(rows: &[LimitReading]) -> HashSet<u64> {
             continue;
         }
         let before = &rows[i - 1];
-        let (Some(before_week), Some(before_five)) = (before.week, before.five_hour) else { continue };
+        let (Some(before_week), Some(before_five)) = (before.week, before.five_hour) else {
+            continue;
+        };
         if before_week == 0.0 || before_five == 0.0 {
             continue;
         }
-        if let Some(next_week) = rows[i + 1..].iter().find_map(|next| next.week) {
-            if next_week < before_week {
-                resets.insert(row.at.to_bits());
-            }
+        if let Some(next_week) = rows[i + 1..].iter().find_map(|next| next.week)
+            && next_week < before_week
+        {
+            resets.insert(row.at.to_bits());
         }
     }
     resets
@@ -201,7 +244,10 @@ pub fn attribution_reach(readings: &[LimitReading], from: f64) -> f64 {
             }
         }
     }
-    before.into_iter().map(|((_, kind), last)| last.unwrap_or(from - PERIODS[kind])).fold(from, f64::min)
+    before
+        .into_iter()
+        .map(|((_, kind), last)| last.unwrap_or(from - PERIODS[kind]))
+        .fold(from, f64::min)
 }
 
 #[cfg(test)]
@@ -253,10 +299,25 @@ mod tests {
         let events = [
             claude("s1", "1970-01-01T00:01:40.000Z", 1.0, ""),
             claude("s1", "1970-01-01T00:02:30.000Z", 3.0, ""),
-            Event { harness: "codex".into(), ..claude("s1", "1970-01-01T00:02:40.000Z", 9.0, "") },
+            Event {
+                harness: "codex".into(),
+                ..claude("s1", "1970-01-01T00:02:40.000Z", 9.0, "")
+            },
         ];
-        let readings = [reading(50_000.0, 2.0, 1e9, None), reading(200_000.0, 10.0, 1e9, None), reading(300_000.0, 13.0, 1e9, None)];
-        let (windows, charges) = attribute_limits(&readings, &started(&["s1"]), &prepare(&events), 1.0);
+        let readings = [
+            reading(50_000.0, 2.0, 1e9, None),
+            reading(200_000.0, 10.0, 1e9, None),
+            reading(300_000.0, 13.0, 1e9, None),
+        ];
+        let (windows, charges) = attribute_limits(
+            &readings,
+            &started(&["s1"]),
+            &prepare(&events),
+            &AgentSdk {
+                factor: 1.0,
+                ..AgentSdk::default()
+            },
+        );
         assert_eq!(windows.len(), 1);
         assert_eq!(charges[0].as_ref().unwrap().points[0], 2.0);
         assert_eq!(charges[1].as_ref().unwrap().points[0], 6.0);
@@ -275,7 +336,13 @@ mod tests {
             five_hour_resets_at: None,
             week_resets_at: None,
         };
-        let rows = [row(1.0, 40.0, 50.0), row(2.0, 0.0, 0.0), row(3.0, 5.0, 10.0), row(4.0, 0.0, 0.0), row(5.0, 1.0, 60.0)];
+        let rows = [
+            row(1.0, 40.0, 50.0),
+            row(2.0, 0.0, 0.0),
+            row(3.0, 5.0, 10.0),
+            row(4.0, 0.0, 0.0),
+            row(5.0, 1.0, 60.0),
+        ];
         let resets = manual_resets_of(&rows);
         assert!(resets.contains(&2f64.to_bits()) && !resets.contains(&4f64.to_bits()));
     }
@@ -290,7 +357,15 @@ mod tests {
             reading(50_000.0, 1.0, 1e9, Some((1.0, 2e9))),
             reading(200_000.0, 4.0, 1e9, Some((3.0, 2e9))),
         ];
-        let (_, charges) = attribute_limits(&readings, &started(&["sdk", "tui"]), &prepare(&events), 2.0);
+        let (_, charges) = attribute_limits(
+            &readings,
+            &started(&["sdk", "tui"]),
+            &prepare(&events),
+            &AgentSdk {
+                factor: 2.0,
+                ..AgentSdk::default()
+            },
+        );
         let (sdk, tui) = (charges[0].as_ref().unwrap(), charges[1].as_ref().unwrap());
         assert_eq!((sdk.points, tui.points), ([2.0, 1.0], [1.0, 1.0]));
     }

@@ -1,4 +1,6 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
+
+use foldhash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use std::ops::Deref;
 
 use chrono::TimeZone;
@@ -6,10 +8,14 @@ use chrono_tz::Tz;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
-use super::attribution::{LimitCharge, attribute_limits};
-use super::limits::{AccountLookup, Binding, KINDS, LimitReading, binding_history, sorted_readings};
+use super::attribution::{AgentSdk, LimitCharge, attribute_limits};
+use super::limits::{
+    AccountLookup, Binding, KINDS, LimitReading, binding_history, sorted_readings,
+};
 use super::plans::PlanPricing;
-use super::timeframe::{Range, bucket_starts, locale_compare, parse_millis, provider, usage_timeframe};
+use super::timeframe::{
+    Range, bucket_starts, locale_compare, parse_millis, provider, usage_timeframe,
+};
 use crate::event::{Device, Event};
 
 /// The account of requests bound to no account, such as Codex or unpooled sessions.
@@ -49,15 +55,31 @@ impl Amount {
 
     pub(crate) fn fields(&self) -> [f64; 10] {
         [
-            self.tokens, self.input, self.output, self.cache_read, self.cache_write,
-            self.reasoning, self.requests, self.api_usd, self.plan_usd, self.unpriced_tokens,
+            self.tokens,
+            self.input,
+            self.output,
+            self.cache_read,
+            self.cache_write,
+            self.reasoning,
+            self.requests,
+            self.api_usd,
+            self.plan_usd,
+            self.unpriced_tokens,
         ]
     }
 
     pub(crate) fn from_fields(f: [f64; 10]) -> Amount {
         Amount {
-            tokens: f[0], input: f[1], output: f[2], cache_read: f[3], cache_write: f[4],
-            reasoning: f[5], requests: f[6], api_usd: f[7], plan_usd: f[8], unpriced_tokens: f[9],
+            tokens: f[0],
+            input: f[1],
+            output: f[2],
+            cache_read: f[3],
+            cache_write: f[4],
+            reasoning: f[5],
+            requests: f[6],
+            api_usd: f[7],
+            plan_usd: f[8],
+            unpriced_tokens: f[9],
         }
     }
 
@@ -69,7 +91,7 @@ impl Amount {
 }
 
 /// Amounts by key, in the order keys were first added.
-pub type Amounts = IndexMap<String, Amount>;
+pub type Amounts = IndexMap<String, Amount, foldhash::fast::RandomState>;
 
 /// The limit points one session was charged on one account.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -175,30 +197,46 @@ pub fn prepare(events: &[Event]) -> Vec<Prepared<'_>> {
         .map(|event| Prepared {
             event,
             millis: parse_millis(&event.timestamp),
-            provider: providers.entry(&event.model).or_insert_with(|| provider(&event.model)),
+            provider: providers
+                .entry(&event.model)
+                .or_insert_with(|| provider(&event.model)),
             tokens: event.token_total() as f64,
         })
         .collect()
 }
 
 fn device_of(event: &Event) -> &str {
-    if event.device_id.is_empty() { "local" } else { &event.device_id }
+    if event.device_id.is_empty() {
+        "local"
+    } else {
+        &event.device_id
+    }
 }
 
-/// Limit readings, the pool's session bindings and the Agent SDK factor, ready for attribution.
+/// Limit readings, the pool's session bindings and the Agent SDK weighting, ready for attribution.
 pub struct LimitInputs {
     pub readings: Vec<LimitReading>,
     pub lookup: AccountLookup,
-    pub sdk_factor: f64,
+    pub sdk: AgentSdk,
 }
 
 impl LimitInputs {
-    pub fn new(readings: &[LimitReading], bindings: &[Binding], sdk_factor: f64) -> Self {
-        LimitInputs { readings: sorted_readings(readings), lookup: AccountLookup::new(&binding_history(bindings)), sdk_factor }
+    pub fn new(readings: &[LimitReading], bindings: &[Binding], sdk: AgentSdk) -> Self {
+        LimitInputs {
+            readings: sorted_readings(readings),
+            lookup: AccountLookup::new(&binding_history(bindings)),
+            sdk,
+        }
     }
 
     fn factor(limits: Option<&LimitInputs>) -> f64 {
-        limits.map_or(1.0, |l| if l.sdk_factor < 1.0 { 1.0 } else { l.sdk_factor })
+        limits.map_or(1.0, |l| {
+            if l.sdk.factor < 1.0 {
+                1.0
+            } else {
+                l.sdk.factor
+            }
+        })
     }
 }
 
@@ -220,7 +258,10 @@ pub fn session_usage(
     limits: Option<&LimitInputs>,
     devices: &[Device],
 ) -> SessionUsage {
-    let at = zone.timestamp_millis_opt(now).single().expect("an instant has one wall time");
+    let at = zone
+        .timestamp_millis_opt(now)
+        .single()
+        .expect("an instant has one wall time");
     let frame = usage_timeframe(r, zone, at);
     let now_millis = now as f64;
     let (start, previous_start, end) = (
@@ -229,10 +270,14 @@ pub fn session_usage(
         frame.end.timestamp_millis() as f64,
     );
     let (size, starts) = bucket_starts(r, &frame);
-    let bucket_of = |millis: f64| starts.partition_point(|s| *s as f64 <= millis).saturating_sub(1);
+    let bucket_of = |millis: f64| {
+        starts
+            .partition_point(|s| *s as f64 <= millis)
+            .saturating_sub(1)
+    };
 
     let (windows, charges) = match limits {
-        Some(l) => attribute_limits(&l.readings, &l.lookup, events, l.sdk_factor),
+        Some(l) => attribute_limits(&l.readings, &l.lookup, events, &l.sdk),
         None => (Vec::new(), Vec::new()),
     };
     let mut assigned_in_range = vec![0.0; windows.len()];
@@ -258,28 +303,31 @@ pub fn session_usage(
             None => {
                 index.insert(key.clone(), rows.len());
                 rows.push(Row {
-                session: Session {
-                    key,
-                    device_id: device.to_string(),
-                    harness: event.harness.clone(),
-                    session_id: event.session_id.clone(),
-                    project: event.repository.clone().unwrap_or_else(|| event.project.clone()),
-                    repository: event.repository.clone(),
-                    cwd: event.project.clone(),
-                    title: None,
-                    entrypoint: String::new(),
-                    first_at: millis,
-                    last_at: millis,
-                    amount: Amount::default(),
-                    models: Amounts::new(),
-                    accounts: Amounts::new(),
-                    series: Vec::new(),
-                    limits: Vec::new(),
-                },
-                series: BTreeMap::new(),
-                limits: HashMap::new(),
-                titled_at: f64::NEG_INFINITY,
-            });
+                    session: Session {
+                        key,
+                        device_id: device.to_string(),
+                        harness: event.harness.clone(),
+                        session_id: event.session_id.clone(),
+                        project: event
+                            .repository
+                            .clone()
+                            .unwrap_or_else(|| event.project.clone()),
+                        repository: event.repository.clone(),
+                        cwd: event.project.clone(),
+                        title: None,
+                        entrypoint: String::new(),
+                        first_at: millis,
+                        last_at: millis,
+                        amount: Amount::default(),
+                        models: Amounts::default(),
+                        accounts: Amounts::default(),
+                        series: Vec::new(),
+                        limits: Vec::new(),
+                    },
+                    series: BTreeMap::new(),
+                    limits: HashMap::new(),
+                    titled_at: f64::NEG_INFINITY,
+                });
                 rows.len() - 1
             }
         };
@@ -296,26 +344,48 @@ pub fn session_usage(
             s.entrypoint = event.entrypoint.clone();
         }
         s.amount.add_event(event, plan_usd);
-        s.models.entry(event.model.clone()).or_default().add_event(event, plan_usd);
+        s.models
+            .entry(event.model.clone())
+            .or_default()
+            .add_event(event, plan_usd);
         let account = limits.map_or("", |l| l.lookup.account_of(event));
-        let account = if account.is_empty() { NO_ACCOUNT } else { account };
-        s.accounts.entry(account.to_string()).or_default().add_event(event, plan_usd);
+        let account = if account.is_empty() {
+            NO_ACCOUNT
+        } else {
+            account
+        };
+        s.accounts
+            .entry(account.to_string())
+            .or_default()
+            .add_event(event, plan_usd);
         let bucket = bucket_of(millis);
-        let point = row.series.entry(bucket).or_insert([bucket as f64, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        let point = row
+            .series
+            .entry(bucket)
+            .or_insert([bucket as f64, 0.0, 0.0, 0.0, 0.0, 0.0]);
         point[1] += event.tokens;
         point[2] += event.cost_usd;
         point[3] += plan_usd;
-        let Some(Some(LimitCharge { points, window })) = charges.get(i) else { continue };
+        let Some(Some(LimitCharge { points, window })) = charges.get(i) else {
+            continue;
+        };
         point[4] += points[0];
         point[5] += points[1];
         for (k, kind) in KINDS.iter().enumerate() {
             let Some(w) = window[k] else { continue };
             assigned_in_range[w] += points[k];
             let account = &windows[w].account;
-            let at = *row.limits.entry(format!("{account}:{kind}")).or_insert_with(|| {
-                s.limits.push(SessionLimit { account: account.clone(), kind: kind.to_string(), points: 0.0 });
-                s.limits.len() - 1
-            });
+            let at = *row
+                .limits
+                .entry(format!("{account}:{kind}"))
+                .or_insert_with(|| {
+                    s.limits.push(SessionLimit {
+                        account: account.clone(),
+                        kind: kind.to_string(),
+                        points: 0.0,
+                    });
+                    s.limits.len() - 1
+                });
             s.limits[at].points += points[k];
         }
     }
@@ -347,23 +417,35 @@ pub fn session_usage(
     }
 
     rows.sort_by(|a, b| {
-        b.session.amount.api_usd
+        b.session
+            .amount
+            .api_usd
             .partial_cmp(&a.session.amount.api_usd)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| locale_compare(&a.session.key, &b.session.key))
     });
     let sessions = rows
         .into_iter()
-        .map(|row| Session { series: row.series.into_values().collect(), ..row.session })
+        .map(|row| Session {
+            series: row.series.into_values().collect(),
+            ..row.session
+        })
         .collect();
     SessionUsage {
         generated_at: now,
-        period: Period { from: frame.start.timestamp_millis(), to: frame.end.timestamp_millis(), timezone: zone.name().to_string() },
+        period: Period {
+            from: frame.start.timestamp_millis(),
+            to: frame.end.timestamp_millis(),
+            timezone: zone.name().to_string(),
+        },
         bucket: size.to_string(),
         buckets: starts,
         sessions,
         windows: usages,
-        previous: Previous { amount: previous, sessions: previous_sessions.len() },
+        previous: Previous {
+            amount: previous,
+            sessions: previous_sessions.len(),
+        },
         devices: devices.to_vec(),
         sdk_factor: LimitInputs::factor(limits),
     }

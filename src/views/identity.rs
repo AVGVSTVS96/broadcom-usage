@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use foldhash::{HashMap, HashMapExt};
 use std::path::Path;
 use std::process::Command;
 use std::sync::LazyLock;
@@ -85,11 +85,13 @@ pub struct SessionRef<'a> {
     pub repository: Option<&'a str>,
 }
 
-static JOB_TITLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(.+)/([0-9A-Za-z_.@-]+)$").unwrap());
+static JOB_TITLE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(.+)/([0-9A-Za-z_.@-]+)$").unwrap());
 /// tokenhub's GitHub import names each session `github:<run>:<attempt>:…` and titles it `<workflow> #<run>`.
 static RUN_SESSION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^github:([0-9]+):").unwrap());
 static RUN_NUMBER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r" #[0-9]+$").unwrap());
-static PAST_LOG_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"-([0-9a-f]{8})\.md$").unwrap());
+static PAST_LOG_NAME: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"-([0-9a-f]{8})\.md$").unwrap());
 
 fn thread_link(app: &str, id: &str) -> Option<String> {
     match app {
@@ -124,7 +126,10 @@ pub(crate) fn prefix(id: &str, n: usize) -> &str {
 pub fn who_of(names: &Names, s: SessionRef) -> Who {
     let project = s.repository.unwrap_or(s.project).to_string();
     if let Some(run) = RUN_SESSION.captures(s.session_id) {
-        let repo = project.strip_prefix("https://github.com/").unwrap_or(&project).to_string();
+        let repo = project
+            .strip_prefix("https://github.com/")
+            .unwrap_or(&project)
+            .to_string();
         let workflow = s
             .title
             .map(|title| RUN_NUMBER.replace(title, "").trim().to_string())
@@ -132,7 +137,14 @@ pub fn who_of(names: &Names, s: SessionRef) -> Who {
             .unwrap_or_else(|| "workflow".into());
         let run = run[1].to_string();
         let href = Some(format!("https://github.com/{repo}/actions/runs/{run}"));
-        return Who { kind: "action".into(), repo, workflow, run: Some(run), href, ..Who::default() };
+        return Who {
+            kind: "action".into(),
+            repo,
+            workflow,
+            run: Some(run),
+            href,
+            ..Who::default()
+        };
     }
     let title = s.title.map(str::trim).unwrap_or_default();
     let found = names
@@ -154,19 +166,37 @@ pub fn who_of(names: &Names, s: SessionRef) -> Who {
         };
     }
     if let Some(job) = JOB_TITLE.captures(title) {
-        return Who { kind: "job".into(), owner: Some(job[1].to_string()), unit: job[2].to_string(), ..Who::default() };
+        return Who {
+            kind: "job".into(),
+            owner: Some(job[1].to_string()),
+            unit: job[2].to_string(),
+            ..Who::default()
+        };
     }
     if !title.is_empty() {
-        return Who { kind: "session".into(), title: title.into(), project, ..Who::default() };
+        return Who {
+            kind: "session".into(),
+            title: title.into(),
+            project,
+            ..Who::default()
+        };
     }
-    Who { kind: "project".into(), project, ..Who::default() }
+    Who {
+        kind: "project".into(),
+        project,
+        ..Who::default()
+    }
 }
 
 /// The agent row a session ranks under.
 pub fn row_of(who: &Who, session_key: &str) -> String {
     match who.kind.as_str() {
         "thread" => format!("t:{}:{}", who.app, who.thread),
-        "job" => format!("j:{}/{}", who.owner.as_deref().unwrap_or_default(), who.unit),
+        "job" => format!(
+            "j:{}/{}",
+            who.owner.as_deref().unwrap_or_default(),
+            who.unit
+        ),
         "session" => format!("s:{session_key}"),
         "action" => format!("g:{}:{}", who.repo, who.workflow),
         _ => format!("p:{}", who.project),
@@ -191,7 +221,10 @@ pub fn label_of(who: &Who) -> (String, String) {
             None => (who.unit.clone(), "job".into()),
         },
         "session" => (who.title.clone(), basename(&who.project).into()),
-        "action" => (format!("{} · {}", basename(&who.repo), who.workflow), "GitHub Actions".into()),
+        "action" => (
+            format!("{} · {}", basename(&who.repo), who.workflow),
+            "GitHub Actions".into(),
+        ),
         _ => {
             let name = basename(&who.project);
             let label = if name.is_empty() { &who.project } else { name };
@@ -217,7 +250,14 @@ fn hex_json<T: for<'de> Deserialize<'de>>(hex: &Path, command: &str) -> Result<T
         .map_err(|err| format!("hex {command}: {err}"))?;
     if !output.status.success() {
         let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(format!("hex {command}: {}", if message.is_empty() { output.status.to_string() } else { message }));
+        return Err(format!(
+            "hex {command}: {}",
+            if message.is_empty() {
+                output.status.to_string()
+            } else {
+                message
+            }
+        ));
     }
     serde_json::from_slice(&output.stdout).map_err(|err| format!("hex {command}: {err}"))
 }
@@ -303,16 +343,27 @@ mod tests {
     use super::*;
 
     fn session<'a>(id: &'a str, title: Option<&'a str>) -> SessionRef<'a> {
-        SessionRef { session_id: id, title, project: "/home/me/hex", repository: None }
+        SessionRef {
+            session_id: id,
+            title,
+            project: "/home/me/hex",
+            repository: None,
+        }
     }
 
     #[test]
     fn names_sessions_in_order() {
-        let thread = |name: &str| Thread { app: "telegram".into(), thread: format!("-1001:{name}"), name: name.into() };
+        let thread = |name: &str| Thread {
+            app: "telegram".into(),
+            thread: format!("-1001:{name}"),
+            name: name.into(),
+        };
         let mut names = Names::default();
         names.current.insert("live".into(), thread("Live"));
         names.logged.insert("pastpast".into(), thread("Past"));
-        names.named.insert("Twice".into(), vec![thread("Twice"), thread("Twice")]);
+        names
+            .named
+            .insert("Twice".into(), vec![thread("Twice"), thread("Twice")]);
         names.named.insert("Once".into(), vec![thread("Once")]);
         let row = |s: SessionRef| row_of(&who_of(&names, s), "k");
         assert_eq!(row(session("live", None)), "t:telegram:-1001:Live");
@@ -321,14 +372,36 @@ mod tests {
         assert_eq!(row(session("x", Some("Twice"))), "s:k");
         assert_eq!(row(session("x", Some("hex/kb-wave"))), "j:hex/kb-wave");
         assert_eq!(row(session("x", None)), "p:/home/me/hex");
-        let action = who_of(&names, SessionRef { repository: Some("https://github.com/o/r"), ..session("github:42:1:x", Some("CI #42")) });
-        assert_eq!((row_of(&action, "k"), action.href.as_deref()), ("g:o/r:CI".into(), Some("https://github.com/o/r/actions/runs/42")));
-        assert_eq!(thread_link("telegram", "-1001:7").as_deref(), Some("https://t.me/c/1/7"));
+        let action = who_of(
+            &names,
+            SessionRef {
+                repository: Some("https://github.com/o/r"),
+                ..session("github:42:1:x", Some("CI #42"))
+            },
+        );
+        assert_eq!(
+            (row_of(&action, "k"), action.href.as_deref()),
+            (
+                "g:o/r:CI".into(),
+                Some("https://github.com/o/r/actions/runs/42")
+            )
+        );
+        assert_eq!(
+            thread_link("telegram", "-1001:7").as_deref(),
+            Some("https://t.me/c/1/7")
+        );
     }
 
     #[test]
     fn who_writes_only_its_kinds_fields() {
-        let job = Who { kind: "job".into(), unit: "u".into(), ..Who::default() };
-        assert_eq!(serde_json::to_string(&job).unwrap(), r#"{"kind":"job","owner":null,"unit":"u"}"#);
+        let job = Who {
+            kind: "job".into(),
+            unit: "u".into(),
+            ..Who::default()
+        };
+        assert_eq!(
+            serde_json::to_string(&job).unwrap(),
+            r#"{"kind":"job","owner":null,"unit":"u"}"#
+        );
     }
 }

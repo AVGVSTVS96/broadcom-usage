@@ -72,10 +72,23 @@ pub fn credits(grants: &[ApiCredit], events: &[Event], now: i64) -> Result<Credi
         {
             return Err(INVALID.into());
         }
-        let mut item = CreditUsage { grant: g.clone(), recorded: g.remaining, proxy_usd: 0.0, requests: 0, unpriced: 0, last_request_at: None };
+        let mut item = CreditUsage {
+            grant: g.clone(),
+            recorded: g.remaining,
+            proxy_usd: 0.0,
+            requests: 0,
+            unpriced: 0,
+            last_request_at: None,
+        };
         for e in events {
             let at = parse_millis(&e.timestamp);
-            if !e.is_proxy() || e.account_id != g.credential_id || at.is_nan() || at < g.starts_at as f64 || at >= g.expires_at as f64 || at > now as f64 {
+            if !e.is_proxy()
+                || e.account_id != g.credential_id
+                || at.is_nan()
+                || at < g.starts_at as f64
+                || at >= g.expires_at as f64
+                || at > now as f64
+            {
                 continue;
             }
             item.requests += 1;
@@ -118,7 +131,11 @@ mod tests {
             expires_at: now + hour,
             renews_at: 0,
         };
-        let at = |ms: i64| chrono::DateTime::from_timestamp_millis(ms).unwrap().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let at = |ms: i64| {
+            chrono::DateTime::from_timestamp_millis(ms)
+                .unwrap()
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        };
         let proxy = |ms: i64, cost: f64, known: bool, failed: bool| Event {
             source: "proxy".into(),
             account_id: "key".into(),
@@ -137,7 +154,13 @@ mod tests {
         ];
         let got = &credits(&[grant], &events, now).unwrap().api[0];
         assert_eq!(
-            (got.grant.remaining, got.recorded, got.proxy_usd, got.requests, got.unpriced),
+            (
+                got.grant.remaining,
+                got.recorded,
+                got.proxy_usd,
+                got.requests,
+                got.unpriced
+            ),
             (120.0, 150.0, 80.0, 4, 1)
         );
     }
