@@ -412,8 +412,12 @@ mod tests {
         let mut files = vec![parent, fork];
         filter_replays(&mut files);
         let (entries, _) = deduplicate(&files);
-        let ids: std::collections::HashSet<&str> = entries.iter().map(|e| e.usage.id.as_str()).collect();
-        assert_eq!(ids, std::collections::HashSet::from(["pi:aaa:e1", "pi:bbb:e2"]));
+        let ids: std::collections::HashSet<&str> =
+            entries.iter().map(|e| e.usage.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            std::collections::HashSet::from(["pi:aaa:e1", "pi:bbb:e2"])
+        );
         assert_eq!(files[1].retracted_ids, ["pi:bbb:e1"]);
     }
 }

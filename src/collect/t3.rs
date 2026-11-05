@@ -349,7 +349,6 @@ fn read_database(
             }
         }
     }
-    drop(insert);
     Ok(values)
 }
 

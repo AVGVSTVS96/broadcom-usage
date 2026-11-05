@@ -57,7 +57,7 @@ pub struct Collection {
 }
 
 struct Source {
-    harness: &'static str,
+    harness: Harness,
     path: PathBuf,
 }
 
@@ -137,21 +137,21 @@ impl Collector {
             }
         };
         let mut list: Vec<Source> = Vec::new();
-        let mut add = |harness: &'static str, root: PathBuf| {
+        let mut add = |harness: Harness, root: PathBuf| {
             let path = expand(&root);
             if !list.iter().any(|s| s.harness == harness && s.path == path) {
                 list.push(Source { harness, path });
             }
         };
         for root in &claude {
-            add("claude", under(root, "projects"));
+            add(Harness::Claude, under(root, "projects"));
         }
         for root in pick(&sources.codex, "CODEX_HOME", home.join(".codex")) {
             if matches!(base(&root).as_str(), "sessions" | "archived_sessions") {
-                add("codex", root);
+                add(Harness::Codex, root);
             } else {
-                add("codex", root.join("sessions"));
-                add("codex", root.join("archived_sessions"));
+                add(Harness::Codex, root.join("sessions"));
+                add(Harness::Codex, root.join("archived_sessions"));
             }
         }
         for root in pick(
@@ -159,13 +159,13 @@ impl Collector {
             "PI_CODING_AGENT_DIR",
             home.join(".pi").join("agent"),
         ) {
-            add("pi", under(&root, "sessions"));
+            add(Harness::Pi, under(&root, "sessions"));
         }
         for root in pick(&sources.grok, "GROK_HOME", home.join(".grok")) {
-            add("grok", under(&root, "sessions"));
+            add(Harness::Grok, under(&root, "sessions"));
         }
         for root in pick(&sources.muse, "MUSE_HOME", data_home.join("muse")) {
-            add("muse", under(&root, "sessions"));
+            add(Harness::Muse, under(&root, "sessions"));
         }
         let workers = match sources.max_workers {
             0 => (std::thread::available_parallelism().map_or(1, |n| n.get()) / 2).max(1),
@@ -213,7 +213,8 @@ impl Collector {
         for &i in &stale {
             if let Some(c) = cached.get(&logs[i].key)
                 && let Some(resume) = c.resume.clone().filter(|_| {
-                    logs[i].harness == "claude" && same_file(&c.signature, &logs[i].signature)
+                    logs[i].harness == Harness::Claude
+                        && same_file(&c.signature, &logs[i].signature)
                 })
             {
                 prior.insert(i, (cache::parsed(&self.db, c.id)?, resume));
@@ -253,7 +254,7 @@ impl Collector {
         let grok_roots: Vec<PathBuf> = self
             .sources
             .iter()
-            .filter(|s| s.harness == "grok")
+            .filter(|s| s.harness == Harness::Grok)
             .map(|s| s.path.clone())
             .collect();
         let (grok_files, grok_warnings) = grok::collect(&grok_roots);
@@ -295,7 +296,7 @@ impl Collector {
 }
 
 struct LogFile {
-    harness: &'static str,
+    harness: Harness,
     path: PathBuf,
     key: String,
     signature: String,
@@ -331,7 +332,7 @@ fn jsonl_name(name: &str) -> bool {
 fn list_logs(sources: &[Source]) -> (Vec<LogFile>, Vec<String>) {
     let mut logs = Vec::new();
     let mut warnings = Vec::new();
-    for source in sources.iter().filter(|s| s.harness != "grok") {
+    for source in sources.iter().filter(|s| s.harness != Harness::Grok) {
         let real = match std::fs::canonicalize(&source.path) {
             Ok(real) if real.is_dir() => real,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
@@ -398,7 +399,7 @@ fn parse_file(log: &LogFile, prior: Option<(Parsed, Resume)>) -> Option<(Parsed,
     let mut reader = BufReader::with_capacity(1 << 20, file);
     let name = log.path.to_string_lossy();
     let parsed = match log.harness {
-        "claude" => {
+        Harness::Claude => {
             let (mut claude, start) = match prior.and_then(|(parsed, resume)| {
                 resumable(reader.get_mut(), resume).map(|r| (parsed, r))
             }) {
@@ -426,8 +427,8 @@ fn parse_file(log: &LogFile, prior: Option<(Parsed, Resume)>) -> Option<(Parsed,
             };
             return Some((claude.finish(), resume));
         }
-        "codex" => parse::parse_codex(&mut reader, &name),
-        "muse" => parse::parse_muse(&mut reader, &name),
+        Harness::Codex => parse::parse_codex(&mut reader, &name),
+        Harness::Muse => parse::parse_muse(&mut reader, &name),
         _ => parse::parse_pi(&mut reader, &name),
     };
     parsed.ok().map(|p| (p, None))
@@ -470,12 +471,11 @@ fn parse_all(
     results.into_inner().unwrap()
 }
 
-
 fn event(u: &Usage) -> Event {
     Event {
         id: u.id.clone(),
         timestamp: u.timestamp.clone(),
-        harness: u.harness.as_str().into(),
+        harness: u.harness.to_string(),
         model: u.model.clone(),
         project: u.project.clone(),
         session_id: u.session_id.clone(),
@@ -526,8 +526,7 @@ fn build(
 
     let mut resolver = repository::Resolver::new();
     let remote = |r: &Option<String>| r.as_ref().is_some_and(|r| !r.starts_with("local:"));
-    let metadata =
-        |harness: Harness, session: &str| t3.get(&format!("{}:{session}", harness.as_str()));
+    let metadata = |harness: Harness, session: &str| t3.get(&format!("{harness}:{session}"));
     let mut session_repositories: HashMap<(Harness, String), String> = HashMap::new();
     let mut attempted = HashSet::new();
     for entry in &entries {
@@ -607,7 +606,13 @@ mod tests {
         collector: Collector,
     }
 
-    fn claude_line(session: &str, request: &str, message: &str, input: i64, sidechain: bool) -> String {
+    fn claude_line(
+        session: &str,
+        request: &str,
+        message: &str,
+        input: i64,
+        sidechain: bool,
+    ) -> String {
         format!(
             r#"{{"type":"assistant","isSidechain":{sidechain},"sessionId":"{session}","requestId":"{request}","timestamp":"2026-01-01T00:00:0{input}.000Z","cwd":"/w","message":{{"id":"{message}","model":"claude-opus-4-5","usage":{{"input_tokens":{input},"output_tokens":1}}}}}}"#
         )
@@ -640,7 +645,11 @@ mod tests {
 
         fn append(&self, file: &str, lines: &[String]) {
             use std::io::Write;
-            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(self.root.join(file)).unwrap();
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(self.root.join(file))
+                .unwrap();
             for line in lines {
                 writeln!(f, "{line}").unwrap();
             }
@@ -648,7 +657,9 @@ mod tests {
 
         fn pass(&mut self) -> Collection {
             let mut out = Collection::default();
-            self.collector.collect(&Policy::bundled(), |c| Ok(out = c)).unwrap();
+            self.collector
+                .collect(&Policy::bundled(), |c| Ok(out = c))
+                .unwrap();
             out
         }
 
@@ -666,9 +677,18 @@ mod tests {
     #[test]
     fn passes_return_only_what_changed() {
         let mut f = Fixture::new("passes");
-        f.append("claude/projects/p/s1.jsonl", &[claude_line("s1", "r1", "m1", 1, false)]);
-        f.append("claude/projects/p/s1/subagents/agent-a.jsonl", &[claude_line("s1", "r9", "m1", 2, true)]);
-        f.append("claude/projects/p/s2.jsonl", &[claude_line("s2", "r2", "m2", 3, false)]);
+        f.append(
+            "claude/projects/p/s1.jsonl",
+            &[claude_line("s1", "r1", "m1", 1, false)],
+        );
+        f.append(
+            "claude/projects/p/s1/subagents/agent-a.jsonl",
+            &[claude_line("s1", "r9", "m1", 2, true)],
+        );
+        f.append(
+            "claude/projects/p/s2.jsonl",
+            &[claude_line("s2", "r2", "m2", 3, false)],
+        );
         let cold = f.pass();
         assert_eq!(cold.events.len(), 2);
         assert_eq!(cold.retracted_ids, ["claude:message:m1:r9"]);
@@ -676,7 +696,10 @@ mod tests {
         f.collector = Fixture::open(&f.root);
         assert!(f.ids().is_empty(), "a restart parses nothing new");
 
-        f.append("claude/projects/p/s1.jsonl", &[claude_line("s1", "r4", "m4", 4, false)]);
+        f.append(
+            "claude/projects/p/s1.jsonl",
+            &[claude_line("s1", "r4", "m4", 4, false)],
+        );
         assert_eq!(f.ids(), ["claude:message:m1:r1", "claude:message:m4:r4"]);
         let warm = f.pass().events;
         assert!(warm.is_empty());
@@ -684,22 +707,44 @@ mod tests {
         let fresh_root = f.root.with_extension("fresh");
         let _ = std::fs::remove_dir_all(&fresh_root);
         copy_dir(&f.root.join("claude"), &fresh_root.join("claude"));
-        let mut fresh = Fixture { collector: Fixture::open(&fresh_root), root: fresh_root };
+        let mut fresh = Fixture {
+            collector: Fixture::open(&fresh_root),
+            root: fresh_root,
+        };
         let mut all = fresh.pass().events;
         all.retain(|e| e.session_id == "s1");
-        f.append("claude/projects/p/s1.jsonl", &[claude_line("s1", "r5", "m5", 5, false)]);
-        fresh.append("claude/projects/p/s1.jsonl", &[claude_line("s1", "r5", "m5", 5, false)]);
+        f.append(
+            "claude/projects/p/s1.jsonl",
+            &[claude_line("s1", "r5", "m5", 5, false)],
+        );
+        fresh.append(
+            "claude/projects/p/s1.jsonl",
+            &[claude_line("s1", "r5", "m5", 5, false)],
+        );
         let appended = f.pass().events;
-        let expected: Vec<Event> = fresh.pass().events.into_iter().filter(|e| e.session_id == "s1").collect();
-        assert_eq!(appended, expected, "an appended log reads the same as a fresh parse");
+        let expected: Vec<Event> = fresh
+            .pass()
+            .events
+            .into_iter()
+            .filter(|e| e.session_id == "s1")
+            .collect();
+        assert_eq!(
+            appended, expected,
+            "an appended log reads the same as a fresh parse"
+        );
         assert_eq!(all.len() + 1, appended.len());
     }
 
     #[test]
     fn a_failed_delivery_comes_back() {
         let mut f = Fixture::new("delivery");
-        f.append("claude/projects/p/s1.jsonl", &[claude_line("s1", "r1", "m1", 1, false)]);
-        let failed = f.collector.collect(&Policy::bundled(), |_| anyhow::bail!("store is down"));
+        f.append(
+            "claude/projects/p/s1.jsonl",
+            &[claude_line("s1", "r1", "m1", 1, false)],
+        );
+        let failed = f
+            .collector
+            .collect(&Policy::bundled(), |_| anyhow::bail!("store is down"));
         assert!(failed.is_err());
         assert_eq!(f.ids(), ["claude:message:m1:r1"]);
         assert!(f.ids().is_empty());
@@ -708,9 +753,16 @@ mod tests {
     #[test]
     fn a_rewritten_log_is_parsed_whole() {
         let mut f = Fixture::new("rewrite");
-        f.append("claude/projects/p/s1.jsonl", &[claude_line("s1", "r1", "m1", 1, false)]);
+        f.append(
+            "claude/projects/p/s1.jsonl",
+            &[claude_line("s1", "r1", "m1", 1, false)],
+        );
         f.pass();
-        std::fs::write(f.root.join("claude/projects/p/s1.jsonl"), claude_line("s1", "r2", "m2", 2, false) + "\n").unwrap();
+        std::fs::write(
+            f.root.join("claude/projects/p/s1.jsonl"),
+            claude_line("s1", "r2", "m2", 2, false) + "\n",
+        )
+        .unwrap();
         assert_eq!(f.ids(), ["claude:message:m2:r2"]);
     }
 

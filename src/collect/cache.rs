@@ -128,7 +128,10 @@ pub fn links_of(tx: &Transaction, file: i64) -> Result<Vec<Link>> {
 /// The cached files whose records can change with the given links: every file sharing
 /// a link with them, and with those files, until no new file is reached.
 pub fn affected(tx: &Transaction, seeds: &HashSet<Link>) -> Result<HashSet<i64>> {
-    tx.execute("CREATE TEMP TABLE IF NOT EXISTS seeds (link INTEGER PRIMARY KEY)", [])?;
+    tx.execute(
+        "CREATE TEMP TABLE IF NOT EXISTS seeds (link INTEGER PRIMARY KEY)",
+        [],
+    )?;
     let mut insert = tx.prepare_cached("INSERT OR IGNORE INTO temp.seeds (link) VALUES (?)")?;
     for link in seeds {
         insert.execute([link])?;
@@ -143,7 +146,9 @@ pub fn affected(tx: &Transaction, seeds: &HashSet<Link>) -> Result<HashSet<i64>>
          )
          SELECT file FROM reach WHERE file IS NOT NULL",
     )?;
-    let files = statement.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+    let files = statement
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
     tx.execute("DELETE FROM temp.seeds", [])?;
     Ok(files)
 }

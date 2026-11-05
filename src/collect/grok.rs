@@ -122,11 +122,13 @@ fn append_usage(
             reasoning_tokens: output.min(count(f[4]).unwrap_or(0)),
             ..Default::default()
         };
-        if !incomplete(f[7]) && !incomplete(f[8]) && !incomplete(usage.get("usageIsIncomplete")) {
-            if let Some(ticks) = count(f[6]).filter(|t| *t > 0) {
-                let cost = f[6].num().unwrap_or(ticks as f64) / 1e10;
-                e.reported_cost_usd = Some(cost);
-            }
+        if !incomplete(f[7])
+            && !incomplete(f[8])
+            && !incomplete(usage.get("usageIsIncomplete"))
+            && let Some(ticks) = count(f[6]).filter(|t| *t > 0)
+        {
+            let cost = f[6].num().unwrap_or(ticks as f64) / 1e10;
+            e.reported_cost_usd = Some(cost);
         }
         e.requests = count(f[5]);
         parsed.events.push(Candidate {
@@ -307,10 +309,11 @@ pub fn collect(roots: &[PathBuf]) -> (Vec<Parsed>, Vec<String>) {
             let mut group_project = path_unescape(&base)
                 .filter(|d| d.starts_with('/'))
                 .unwrap_or_default();
-            if group_project.is_empty() && regular_file(&group.join(".cwd")) {
-                if let Some(data) = read_bounded(&group.join(".cwd"), 16 * 1024) {
-                    group_project = js_trim(&valid_utf8(&data)).to_string();
-                }
+            if group_project.is_empty()
+                && regular_file(&group.join(".cwd"))
+                && let Some(data) = read_bounded(&group.join(".cwd"), 16 * 1024)
+            {
+                group_project = js_trim(&valid_utf8(&data)).to_string();
             }
             for directory in subdirectories(&group) {
                 let summary = Some(directory.join("summary.json"))

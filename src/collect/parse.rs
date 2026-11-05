@@ -19,6 +19,12 @@ pub enum Harness {
     Muse,
 }
 
+impl std::fmt::Display for Harness {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl Harness {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -1316,7 +1322,9 @@ pub mod tests {
     #[test]
     #[ignore = "reads the Claude logs under COLLECT_LOGS"]
     fn resume_matches_a_whole_parse_on_real_logs() {
-        let Ok(root) = std::env::var("COLLECT_LOGS") else { return };
+        let Ok(root) = std::env::var("COLLECT_LOGS") else {
+            return;
+        };
         let mut pending = vec![std::path::PathBuf::from(root)];
         let mut checked = 0;
         while let Some(dir) = pending.pop() {
@@ -1332,11 +1340,18 @@ pub mod tests {
                 whole.read(&mut &data[..], &name, 0).unwrap();
                 let whole = whole.finish();
                 for third in [1, 2] {
-                    let Some(split) = data[..data.len() * third / 3].iter().rposition(|&b| b == b'\n') else { continue };
+                    let Some(split) = data[..data.len() * third / 3]
+                        .iter()
+                        .rposition(|&b| b == b'\n')
+                    else {
+                        continue;
+                    };
                     let mut head = Claude::default();
                     let read = head.read(&mut &data[..=split], &name, 0).unwrap();
                     let mut resumed = Claude::resume(head.finish());
-                    resumed.read(&mut &data[split + 1..], &name, read.lines).unwrap();
+                    resumed
+                        .read(&mut &data[split + 1..], &name, read.lines)
+                        .unwrap();
                     let mut resumed = resumed.finish();
                     resumed.malformed = whole.malformed;
                     assert_eq!(resumed, whole, "{name} split at {split}");
