@@ -23,6 +23,7 @@ tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 
 [profile.release]
 debug = "line-tables-only"

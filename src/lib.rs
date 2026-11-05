@@ -2,6 +2,7 @@ pub mod collect;
 pub mod config;
 pub mod event;
 pub mod follow;
+pub mod github;
 pub mod ingest;
 pub mod pricing;
 pub mod store;
