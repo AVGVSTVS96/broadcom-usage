@@ -1,0 +1,32 @@
+{
+  "type": "snapshot",
+  "live": {
+    "s:id-1": {
+      "id": "id-2",
+      "label": "label-3",
+      "row": "row-4",
+      "app": null,
+      "state": "idle",
+      "account": "account-5",
+      "host": "server",
+      "cwd": "cwd-6",
+      "since": 1790000000000,
+      "entrypoint": ""
+    },
+    "s:id-7": {
+      "id": "id-8",
+      "label": "label-9",
+      "row": "row-10",
+      "app": "app-11",
+      "state": "idle",
+      "account": "account-12",
+      "host": "server",
+      "cwd": "cwd-13",
+      "since": 1790003600000,
+      "entrypoint": "cli"
+    },
+    "app:buzz": {
+      "connected": true
+    }
+  }
+}

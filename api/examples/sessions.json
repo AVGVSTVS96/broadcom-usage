@@ -1,0 +1,213 @@
+{
+  "generatedAt": 1790000000000,
+  "period": {
+    "from": 1790003600000,
+    "to": 1790007200000,
+    "timezone": "America/Los_Angeles"
+  },
+  "bucket": "1h",
+  "buckets": [
+    1790010800000,
+    1790014400000
+  ],
+  "sessions": [
+    {
+      "key": "key-1",
+      "deviceId": "deviceId-2",
+      "harness": "claude",
+      "sessionId": "sessionId-3",
+      "project": "project-4",
+      "repository": "repository-5",
+      "cwd": "cwd-6",
+      "title": "title-7",
+      "entrypoint": "hex",
+      "firstAt": 1790018000000,
+      "lastAt": 1790021600000,
+      "amount": {
+        "tokens": 3,
+        "input": 3,
+        "output": 3,
+        "cacheRead": 3,
+        "cacheWrite": 3,
+        "reasoning": 3,
+        "requests": 3,
+        "apiUsd": 0.25,
+        "planUsd": 0.25,
+        "unpricedTokens": 0
+      },
+      "models": {
+        "claude-opus-5-5": {
+          "tokens": 3,
+          "input": 3,
+          "output": 3,
+          "cacheRead": 3,
+          "cacheWrite": 3,
+          "reasoning": 3,
+          "requests": 3,
+          "apiUsd": 0.25,
+          "planUsd": 0.25,
+          "unpricedTokens": 0
+        }
+      },
+      "accounts": {
+        "id-8": {
+          "tokens": 3,
+          "input": 3,
+          "output": 3,
+          "cacheRead": 3,
+          "cacheWrite": 3,
+          "reasoning": 3,
+          "requests": 3,
+          "apiUsd": 0.25,
+          "planUsd": 0.25,
+          "unpricedTokens": 0
+        }
+      },
+      "series": [
+        [
+          3,
+          3
+        ],
+        [
+          3,
+          3
+        ]
+      ],
+      "limits": [
+        {
+          "account": "account-9",
+          "kind": "fiveHour",
+          "points": 0.25
+        },
+        {
+          "account": "account-10",
+          "kind": "week",
+          "points": 0.25
+        }
+      ]
+    },
+    {
+      "key": "key-11",
+      "deviceId": "deviceId-12",
+      "harness": "claude",
+      "sessionId": "sessionId-13",
+      "project": "project-14",
+      "repository": "repository-15",
+      "cwd": "cwd-16",
+      "title": "title-17",
+      "entrypoint": "hex",
+      "firstAt": 1790025200000,
+      "lastAt": 1790028800000,
+      "amount": {
+        "tokens": 3,
+        "input": 3,
+        "output": 3,
+        "cacheRead": 3,
+        "cacheWrite": 3,
+        "reasoning": 3,
+        "requests": 3,
+        "apiUsd": 0.25,
+        "planUsd": 0.25,
+        "unpricedTokens": 0
+      },
+      "models": {
+        "claude-opus-5-5": {
+          "tokens": 3,
+          "input": 3,
+          "output": 3,
+          "cacheRead": 3,
+          "cacheWrite": 3,
+          "reasoning": 3,
+          "requests": 3,
+          "apiUsd": 0.25,
+          "planUsd": 0.25,
+          "unpricedTokens": 0
+        }
+      },
+      "accounts": {
+        "id-18": {
+          "tokens": 3,
+          "input": 3,
+          "output": 3,
+          "cacheRead": 3,
+          "cacheWrite": 3,
+          "reasoning": 3,
+          "requests": 3,
+          "apiUsd": 0.25,
+          "planUsd": 0.25,
+          "unpricedTokens": 0
+        }
+      },
+      "series": [
+        [
+          3,
+          3
+        ],
+        [
+          3,
+          3
+        ]
+      ],
+      "limits": [
+        {
+          "account": "account-19",
+          "kind": "week",
+          "points": 0.25
+        },
+        {
+          "account": "account-20",
+          "kind": "fiveHour",
+          "points": 0.25
+        }
+      ]
+    }
+  ],
+  "windows": [
+    {
+      "account": "account-21",
+      "kind": "week",
+      "resetsAt": 1790032400000,
+      "since": 1790036000000,
+      "sampled": 0,
+      "assigned": 0,
+      "unassigned": 0,
+      "rises": []
+    },
+    {
+      "account": "account-22",
+      "kind": "week",
+      "resetsAt": 1790039600000,
+      "since": 1790043200000,
+      "sampled": 0,
+      "assigned": 0,
+      "unassigned": 0,
+      "rises": []
+    }
+  ],
+  "previous": {
+    "tokens": 3,
+    "input": 3,
+    "output": 3,
+    "cacheRead": 3,
+    "cacheWrite": 3,
+    "reasoning": 3,
+    "requests": 3,
+    "apiUsd": 0.25,
+    "planUsd": 0.25,
+    "unpricedTokens": 0,
+    "sessions": 3
+  },
+  "devices": [
+    {
+      "id": "id-23",
+      "label": "server",
+      "syncedAt": 1790046800000
+    },
+    {
+      "id": "id-24",
+      "label": "label-25",
+      "syncedAt": 1790050400000
+    }
+  ],
+  "sdkFactor": 0.25
+}

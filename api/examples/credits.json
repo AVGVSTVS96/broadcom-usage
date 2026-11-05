@@ -1,0 +1,38 @@
+{
+  "api": [
+    {
+      "startsAt": 1790000000000,
+      "account": "account-1",
+      "organization": "organization-2",
+      "credentialId": "credentialId-3",
+      "remaining": 0,
+      "allowance": 3,
+      "monthlyCap": 3,
+      "observedAt": 1790003600000,
+      "expiresAt": 1790007200000,
+      "renewsAt": 1790010800000,
+      "recorded": 0,
+      "proxyUsd": 0.25,
+      "requests": 3,
+      "unpriced": 0,
+      "lastRequestAt": 1790014400000
+    },
+    {
+      "startsAt": 1790018000000,
+      "account": "account-4",
+      "organization": "organization-5",
+      "credentialId": "credentialId-6",
+      "remaining": 0.25,
+      "allowance": 3,
+      "monthlyCap": 3,
+      "observedAt": 1790021600000,
+      "expiresAt": 1790025200000,
+      "renewsAt": 0,
+      "recorded": 3,
+      "proxyUsd": 0.25,
+      "requests": 3,
+      "unpriced": 0,
+      "lastRequestAt": 1790028800000
+    }
+  ]
+}

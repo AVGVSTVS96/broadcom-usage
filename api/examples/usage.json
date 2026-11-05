@@ -1,0 +1,290 @@
+{
+  "query": {
+    "range": "today",
+    "by": "agent",
+    "measure": "api",
+    "where": {},
+    "search": "search-1",
+    "limit": 3,
+    "within": null
+  },
+  "period": {
+    "from": 1790000000000,
+    "to": 1790003600000,
+    "timezone": "America/Los_Angeles"
+  },
+  "totals": {
+    "tokens": 3,
+    "input": 3,
+    "output": 3,
+    "cacheRead": 3,
+    "cacheWrite": 3,
+    "reasoning": 3,
+    "requests": 3,
+    "apiUsd": 0.25,
+    "planUsd": 0.25,
+    "unpricedTokens": 0,
+    "sessions": 3,
+    "cacheHitRate": 0.25,
+    "points": {
+      "fiveHour": 0.25,
+      "week": 0.25
+    }
+  },
+  "previous": {
+    "tokens": 3,
+    "input": 3,
+    "output": 3,
+    "cacheRead": 3,
+    "cacheWrite": 3,
+    "reasoning": 3,
+    "requests": 3,
+    "apiUsd": 0.25,
+    "planUsd": 0.25,
+    "unpricedTokens": 0,
+    "sessions": 3,
+    "cacheHitRate": 0.25,
+    "points": {
+      "fiveHour": null,
+      "week": null
+    }
+  },
+  "buckets": [
+    {
+      "at": 1790007200000,
+      "size": "1h"
+    },
+    {
+      "at": 1790010800000,
+      "size": "1h"
+    }
+  ],
+  "series": [
+    {
+      "key": "key-2",
+      "label": "label-3",
+      "color": 0,
+      "values": [
+        0,
+        0
+      ]
+    },
+    {
+      "key": "key-4",
+      "label": "label-5",
+      "color": 1,
+      "values": [
+        0,
+        0
+      ]
+    }
+  ],
+  "rows": [
+    {
+      "key": "key-6",
+      "label": "label-7",
+      "detail": "detail-8",
+      "who": {
+        "kind": "job",
+        "owner": "owner-9",
+        "unit": "unit-10"
+      },
+      "color": 0,
+      "amount": {
+        "tokens": 3,
+        "input": 3,
+        "output": 3,
+        "cacheRead": 3,
+        "cacheWrite": 3,
+        "reasoning": 3,
+        "requests": 3,
+        "apiUsd": 0.25,
+        "planUsd": 0.25,
+        "unpricedTokens": 0
+      },
+      "points": {
+        "fiveHour": 0.25,
+        "week": 0.25
+      },
+      "byAccount": [
+        {
+          "account": "account-11",
+          "fiveHour": 0.25,
+          "week": 0.25
+        }
+      ],
+      "sessions": 3,
+      "lastActiveAt": 1790014400000,
+      "series": [
+        0,
+        0
+      ],
+      "live": null,
+      "entrypoint": "hex",
+      "agentSdk": 0
+    },
+    {
+      "key": "key-12",
+      "label": "label-13",
+      "detail": "detail-14",
+      "who": {
+        "kind": "job",
+        "owner": "owner-15",
+        "unit": "unit-16"
+      },
+      "color": 1,
+      "amount": {
+        "tokens": 3,
+        "input": 3,
+        "output": 3,
+        "cacheRead": 3,
+        "cacheWrite": 3,
+        "reasoning": 3,
+        "requests": 3,
+        "apiUsd": 0.25,
+        "planUsd": 0.25,
+        "unpricedTokens": 0
+      },
+      "points": {
+        "fiveHour": 0.25,
+        "week": 0.25
+      },
+      "byAccount": [
+        {
+          "account": "account-17",
+          "fiveHour": 0.25,
+          "week": 0.25
+        }
+      ],
+      "sessions": 3,
+      "lastActiveAt": 1790018000000,
+      "series": [
+        0,
+        0
+      ],
+      "live": "working",
+      "entrypoint": "hex",
+      "agentSdk": 0
+    }
+  ],
+  "rowCount": 3,
+  "coverage": {
+    "namedApiUsd": 0.25,
+    "totalApiUsd": 0.25,
+    "limitsSince": 1790021600000,
+    "unassigned": [
+      {
+        "account": "account-18",
+        "kind": "fiveHour",
+        "points": 3
+      }
+    ]
+  },
+  "facets": {
+    "account": [
+      {
+        "id": "id-19",
+        "label": "label-20",
+        "count": 3
+      },
+      {
+        "id": "id-21",
+        "label": "label-22",
+        "count": 3
+      }
+    ],
+    "app": [
+      {
+        "id": "id-23",
+        "label": "label-24",
+        "count": 3
+      },
+      {
+        "id": "id-25",
+        "label": "label-26",
+        "count": 3
+      }
+    ],
+    "device": [
+      {
+        "id": "id-27",
+        "label": "server",
+        "count": 3
+      },
+      {
+        "id": "id-28",
+        "label": "mac",
+        "count": 3
+      }
+    ],
+    "entrypoint": [
+      {
+        "id": "hex",
+        "label": "hex",
+        "count": 3
+      },
+      {
+        "id": "cli",
+        "label": "label-29",
+        "count": 3
+      }
+    ],
+    "harness": [
+      {
+        "id": "claude",
+        "label": "claude",
+        "count": 3
+      },
+      {
+        "id": "codex",
+        "label": "codex",
+        "count": 3
+      }
+    ],
+    "model": [
+      {
+        "id": "claude-sonnet-5-5",
+        "label": "claude-sonnet-5-5",
+        "count": 3
+      },
+      {
+        "id": "claude-opus-5-5",
+        "label": "claude-opus-5-5",
+        "count": 3
+      }
+    ],
+    "project": [
+      {
+        "id": "hex",
+        "label": "hex",
+        "count": 3
+      },
+      {
+        "id": "id-30",
+        "label": "label-31",
+        "count": 3
+      }
+    ]
+  },
+  "sources": {
+    "devices": [
+      {
+        "id": "id-32",
+        "label": "server",
+        "syncedAt": 1790025200000
+      },
+      {
+        "id": "id-33",
+        "label": "label-34",
+        "syncedAt": 1790028800000
+      }
+    ],
+    "proxySince": 1790032400000
+  },
+  "agentSdk": {
+    "apiUsd": 0.25,
+    "share": 0.25,
+    "fiveHour": 0.25,
+    "factor": 0.25
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "type": "patch",
+  "live": {
+    "s:id-1": {
+      "id": "id-2",
+      "label": "label-3",
+      "row": "row-4",
+      "app": null,
+      "state": "working",
+      "account": "account-5",
+      "host": "server",
+      "cwd": "cwd-6",
+      "since": 1790000000000,
+      "entrypoint": ""
+    },
+    "s:id-gone": null
+  }
+}
