@@ -309,7 +309,7 @@ impl Policy {
     }
 }
 
-fn raw_model(e: &Event) -> &str {
+pub fn raw_model(e: &Event) -> &str {
     if e.raw_model.is_empty() {
         &e.model
     } else {
@@ -583,11 +583,6 @@ impl Pricing {
 
     pub fn policy(&self) -> Arc<Policy> {
         self.state.lock().unwrap().policy.clone()
-    }
-
-    /// The last refresh's failure, for the dashboard.
-    pub fn refresh_error(&self) -> Option<String> {
-        self.state.lock().unwrap().refresh_error.clone()
     }
 
     fn until_due(&self) -> Duration {

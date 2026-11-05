@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -32,6 +33,14 @@ fn main() -> Result<()> {
     };
     let config = Config::load(config_path.as_deref())?;
     std::fs::create_dir_all(&config.state_dir)?;
+    std::fs::set_permissions(&config.state_dir, std::fs::Permissions::from_mode(0o700))?;
+    let lock = std::fs::File::create(config.state_dir.join("lock"))?;
+    lock.try_lock().map_err(|_| {
+        anyhow::anyhow!(
+            "another broadcom-usage is using {}",
+            config.state_dir.display()
+        )
+    })?;
     let app = Arc::new(open(config)?);
     match args.first().map(String::as_str) {
         None | Some("serve") => serve(app),

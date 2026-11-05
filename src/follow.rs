@@ -25,6 +25,8 @@ pub struct Followed {
     pub path: PathBuf,
     pub device: Device,
     pub format: Format,
+    /// The file holds everything this device has, so a record it no longer names is gone.
+    pub whole: bool,
 }
 
 #[derive(Deserialize)]
@@ -55,9 +57,11 @@ fn parse(line: &[u8], format: Format) -> Option<Change> {
 }
 
 /// Reads what was appended since the cursor and applies it. A file that was replaced
-/// or shrank is read again from the start; applying a record already held changes nothing.
-/// Returns how many lines were read.
-pub fn catch_up(store: &Store, followed: &Followed, bulk: bool) -> Result<usize> {
+/// or shrank is read again from the start; applying a record already held changes nothing,
+/// and when the file is `whole`, the device's records it no longer names are withdrawn
+/// (Go compacts a journal by renaming a fresh copy over it, so its last withdrawals are
+/// never read). Returns how many lines were read.
+pub fn catch_up(store: &Store, followed: &Followed) -> Result<usize> {
     let key = followed.path.to_string_lossy().into_owned();
     let Ok(mut file) = File::open(&followed.path) else {
         return Ok(0);
@@ -71,6 +75,7 @@ pub fn catch_up(store: &Store, followed: &Followed, bulk: bool) -> Result<usize>
         return Ok(0);
     }
     file.seek(SeekFrom::Start(offset))?;
+    let mut named = (followed.whole && offset == 0).then(std::collections::HashSet::new);
     let mut read = 0;
     let mut chunk = vec![0u8; 8 << 20];
     let mut carry: Vec<u8> = Vec::new();
@@ -88,19 +93,29 @@ pub fn catch_up(store: &Store, followed: &Followed, bulk: bool) -> Result<usize>
             .filter_map(|line| parse(line, followed.format))
             .collect();
         read += changes.len();
-        if bulk {
-            store.load(
-                &followed.device,
-                changes.into_iter().filter_map(|c| match c {
-                    Change::Put(e) => Some(e),
-                    Change::Withdraw(_) => None,
-                }),
-            )?;
-        } else {
-            apply_in_order(store, &followed.device, changes)?;
+        if let Some(named) = &mut named {
+            named.extend(changes.iter().filter_map(|c| match c {
+                Change::Put(e) => Some(e.id.clone()),
+                Change::Withdraw(_) => None,
+            }));
         }
+        apply_in_order(store, &followed.device, changes)?;
         offset += end as u64 + 1;
         carry.drain(..=end);
+        if named.is_none() {
+            store.set_cursor(&key, inode, offset)?;
+        }
+    }
+    if let Some(named) = named {
+        let gone = store
+            .device_ids(&followed.device.id)?
+            .into_iter()
+            .filter(|id| !named.contains(id));
+        apply_in_order(
+            store,
+            &followed.device,
+            gone.map(Change::Withdraw).collect(),
+        )?;
         store.set_cursor(&key, inode, offset)?;
     }
     Ok(read)
@@ -141,7 +156,8 @@ fn apply_in_order(store: &Store, device: &Device, changes: Vec<Change>) -> Resul
 }
 
 /// The Go store's journals: one per device in `<dir>/events`, labeled by `<dir>/devices.json`.
-pub fn go_journals(dir: &Path, local: &Device) -> Vec<Followed> {
+/// `shared_local` says this service also writes the local device's records itself.
+pub fn go_journals(dir: &Path, local: &Device, shared_local: bool) -> Vec<Followed> {
     let devices: Vec<Device> = std::fs::read(dir.join("devices.json"))
         .ok()
         .and_then(|d| serde_json::from_slice(&d).ok())
@@ -158,6 +174,7 @@ pub fn go_journals(dir: &Path, local: &Device) -> Vec<Followed> {
                 path: dir
                     .join("events")
                     .join(format!("{}.ndjson", path_escape(&device.id))),
+                whole: !(device.id == local.id && shared_local),
                 device,
                 format: Format::Journal,
             }

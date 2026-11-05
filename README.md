@@ -16,7 +16,8 @@ receipts ────┘   records → events  └─ GET /deck/events (SSE: s:<
   row per record: the best copy across devices, priced, with a proxy receipt standing in
   for the transcript record of the same request. It's maintained on write, so a view
   reads one indexed time range.
-- Inputs are followed from where they stopped; nothing is read twice.
+- Inputs are followed from where they stopped. A file that was replaced is read again,
+  which changes nothing already held.
 - Shapes match the Go deck it replaces; see [api/](api/README.md).
 
 ## Run
@@ -27,4 +28,4 @@ broadcom-usage serve --config ~/.config/broadcom-usage/config.json
 ```
 
 Every config field is optional; see `src/config.rs`. Clients send the management key as
-`Authorization: Bearer <key>`.
+`Authorization: Bearer <key>` or `X-Management-Key: <key>`.

@@ -165,9 +165,9 @@ impl Deck {
     /// Computes these ranges' session usage from one read of the span they need.
     fn load(&self, ranges: &[Range]) -> Result<Vec<SessionUsage>> {
         let now = now_millis();
-        let mut readings = self.readings.lock().unwrap();
-        let mut bindings = self.bindings.lock().unwrap();
-        let (readings, bindings) = (readings.read().0, bindings.read().0);
+        let readings = self.readings.lock().unwrap().read().0.to_vec();
+        let bindings = self.bindings();
+        let (readings, bindings) = (&readings[..], &bindings[..]);
         let from = ranges
             .iter()
             .map(|&r| {
@@ -225,6 +225,7 @@ impl Deck {
         }
         let deck = self.clone();
         let loading = ranges.clone();
+        let loaded_at = Instant::now();
         let values = tokio::task::spawn_blocking(move || deck.load(&loading)).await??;
         let mut stale = false;
         for (r, value) in ranges.into_iter().zip(values) {
@@ -235,7 +236,7 @@ impl Deck {
                     old.sessions != value.sessions || old.windows != value.windows
                 });
                 cache.value = Some(Arc::new(value));
-                cache.at = Some(Instant::now());
+                cache.at = Some(loaded_at);
                 if changed {
                     cache.views.clear();
                 }
@@ -315,10 +316,10 @@ impl Deck {
                     .ranges
                     .get(&Range::Week)
                     .and_then(|c| c.value.clone());
-                let labels = self.labels(week.as_deref().unwrap_or(&tracked));
                 let deck = self.clone();
                 let tracked = tracked.clone();
                 let view = tokio::task::spawn_blocking(move || -> Result<UsageView> {
+                    let labels = deck.labels(week.as_deref().unwrap_or(&tracked));
                     let parts: Vec<_> = tracked
                         .sessions
                         .iter()

@@ -39,27 +39,25 @@ impl App {
     fn followed(&self) -> Vec<Followed> {
         let mut out = Vec::new();
         if let Some(dir) = &self.config.go_usage_dir {
-            out.extend(follow::go_journals(dir, self.local()));
+            let shared_local = self.config.collects() || self.config.receipts.is_some();
+            out.extend(follow::go_journals(dir, self.local(), shared_local));
         }
         if let Some(path) = &self.config.receipts {
             out.push(Followed {
                 path: path.clone(),
                 device: self.local().clone(),
                 format: Format::Receipts,
+                whole: false,
             });
         }
         out
     }
 
-    /// Reads what the followed files gained; loads in bulk into an empty store.
+    /// Reads what the followed files gained.
     pub fn catch_up(&self) -> Result<usize> {
-        let bulk = self.store.is_empty()?;
         let mut read = 0;
         for followed in self.followed() {
-            read += follow::catch_up(&self.store, &followed, bulk)?;
-        }
-        if bulk && read > 0 {
-            self.store.resolve_all()?;
+            read += follow::catch_up(&self.store, &followed)?;
         }
         Ok(read)
     }
@@ -79,7 +77,7 @@ pub fn start(app: Arc<App>) {
             });
         })
     });
-    if app.config.collect {
+    if app.config.collects() {
         let app = app.clone();
         std::thread::spawn(move || collect(&app));
     }
@@ -146,7 +144,10 @@ pub fn start(app: Arc<App>) {
             let mut five = tokio::time::interval(Duration::from_secs(300));
             loop {
                 tokio::select! {
-                    _ = minute.tick() => { deck.refresh_processes(); deck.publish(); }
+                    _ = minute.tick() => {
+                        let deck = deck.clone();
+                        let _ = tokio::task::spawn_blocking(move || { deck.refresh_processes(); deck.publish(); }).await;
+                    }
                     _ = beat.tick() => deck.stream.heartbeat(),
                     _ = five.tick() => if deck.stream.listeners() > 0 { deck.usage_changed() },
                 }
@@ -234,7 +235,12 @@ fn collect(app: &App) {
 
 /// Calls `changed` once things go quiet for `wait` after a burst of changes under
 /// `paths` (each watched alone, or with its direct subfolders).
-fn spawn_watch(paths: Vec<(PathBuf, bool)>, wait: Duration, changed: impl Fn() + Send + 'static) {
+fn spawn_watch(
+    paths: Vec<(PathBuf, bool)>,
+    wait: Duration,
+    changed: impl Fn() + Send + Sync + 'static,
+) {
+    let changed = Arc::new(changed);
     let (tx, mut rx) = mpsc::unbounded_channel();
     let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
         if event.is_ok_and(|e| !matches!(e.kind, notify::EventKind::Access(_))) {
@@ -257,7 +263,11 @@ fn spawn_watch(paths: Vec<(PathBuf, bool)>, wait: Duration, changed: impl Fn() +
         while rx.recv().await.is_some() {
             tokio::time::sleep(wait).await;
             while rx.try_recv().is_ok() {}
-            changed();
+            let _ = tokio::task::spawn_blocking({
+                let changed = changed.clone();
+                move || changed()
+            })
+            .await;
         }
     });
 }

@@ -1,5 +1,6 @@
 //! The service's settings: one JSON file, every field optional.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -32,8 +33,9 @@ pub struct Config {
     /// The Go proxy's usage folder, whose journals are followed read-only: its history
     /// loads once into an empty store, and anything it still writes follows.
     pub go_usage_dir: Option<PathBuf>,
-    /// Collect this machine's transcripts here (off while the Go proxy still collects them).
-    pub collect: bool,
+    /// Collect this machine's transcripts here; by default only when no Go proxy collects them
+    /// (no `goUsageDir`).
+    pub collect: Option<bool>,
     /// Per-request receipts a proxy appends, one record per line.
     pub receipts: Option<PathBuf>,
     /// Repositories whose GitHub Actions upload claude-usage artifacts (autofork's capture step).
@@ -71,7 +73,7 @@ impl Default for Config {
             hex: home.join("hex"),
             claude: home.join(".claude"),
             go_usage_dir: None,
-            collect: true,
+            collect: None,
             receipts: None,
             github_repos: Vec::new(),
         }
@@ -105,6 +107,10 @@ impl Config {
         Ok(config)
     }
 
+    pub fn collects(&self) -> bool {
+        self.collect.unwrap_or(self.go_usage_dir.is_none())
+    }
+
     pub fn agent_sdk(&self) -> AgentSdk {
         AgentSdk {
             factor: self.agent_sdk_factor,
@@ -128,7 +134,9 @@ impl Config {
                 return Ok(id.trim().to_string());
             }
         }
-        let id = format!("{:032x}", rand_u128());
+        let mut bytes = [0u8; 16];
+        std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+        let id: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
         std::fs::write(&path, format!("{id}\n"))?;
         Ok(id)
     }
@@ -140,19 +148,4 @@ impl Config {
                 .unwrap_or_else(|_| "server".into())
         })
     }
-}
-
-fn rand_u128() -> u128 {
-    use std::hash::{BuildHasher, Hasher};
-    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-    h.write_u128(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos(),
-    );
-    let a = h.finish() as u128;
-    let mut h2 = std::collections::hash_map::RandomState::new().build_hasher();
-    h2.write_u64(a as u64);
-    (a << 64) | h2.finish() as u128
 }

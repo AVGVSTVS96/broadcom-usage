@@ -316,31 +316,6 @@ fn only_exact_request_identity_reconciles() {
     }
 }
 
-#[test]
-fn bulk_load_resolves_like_applying() {
-    let dir = tempdir();
-    let store = open(&dir);
-    let mut transcript = record("claude:message:msg_1:req_1", 10);
-    transcript.timestamp = "2026-11-03T00:00:01Z".into();
-    store.load(&device("server"), vec![wire()]).unwrap();
-    store
-        .load(
-            &device("mac"),
-            vec![Event {
-                device_id: "mac".into(),
-                ..transcript
-            }],
-        )
-        .unwrap();
-    store.resolve_all().unwrap();
-    let got = store.events().unwrap();
-    assert_eq!(got.len(), 1);
-    assert_eq!(
-        (got[0].project.as_str(), got[0].device_id.as_str()),
-        ("/work/project", "mac")
-    );
-}
-
 fn tempdir() -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "broadcom-usage-test-{}-{}",
@@ -352,4 +327,56 @@ fn tempdir() -> std::path::PathBuf {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+fn journal_line(e: &Event) -> String {
+    format!("{{\"e\":{}}}\n", serde_json::to_string(e).unwrap())
+}
+
+fn visible_ids(store: &Store) -> Vec<String> {
+    store.events().unwrap().into_iter().map(|e| e.id).collect()
+}
+
+#[test]
+fn journals_follow_withdrawals_and_rewrites() {
+    use broadcom_usage::follow::{self, Followed, Format};
+    use std::io::Write;
+    let dir = tempdir();
+    let store = open(&dir);
+    let journal = dir.join("mac.ndjson");
+    let followed = Followed {
+        path: journal.clone(),
+        device: device("mac"),
+        format: Format::Journal,
+        whole: true,
+    };
+    let (x, y) = (record("x", 1), record("y", 1));
+    std::fs::write(
+        &journal,
+        journal_line(&x) + &journal_line(&y) + "{\"d\":\"x\"}\n",
+    )
+    .unwrap();
+    follow::catch_up(&store, &followed).unwrap();
+    assert_eq!(visible_ids(&store), ["y"]);
+
+    // Go appends a withdrawal and compacts in the same call, before it is read.
+    let z = record("z", 1);
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&journal)
+        .unwrap()
+        .write_all(journal_line(&z).as_bytes())
+        .unwrap();
+    follow::catch_up(&store, &followed).unwrap();
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&journal)
+        .unwrap()
+        .write_all(b"{\"d\":\"y\"}\n")
+        .unwrap();
+    let fresh = dir.join("compact-1");
+    std::fs::write(&fresh, journal_line(&z)).unwrap();
+    std::fs::rename(&fresh, &journal).unwrap();
+    follow::catch_up(&store, &followed).unwrap();
+    assert_eq!(visible_ids(&store), ["z"]);
 }

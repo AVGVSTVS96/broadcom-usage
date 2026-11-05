@@ -35,12 +35,18 @@ pub fn router(app: Arc<App>) -> Router {
 }
 
 async fn authorize(State(app): State<Arc<App>>, request: Request, next: Next) -> Response {
-    let given = request
-        .headers()
+    let headers = request.headers();
+    let given = match headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .unwrap_or("");
+    {
+        Some(v) if v.len() > 7 && v[..7].eq_ignore_ascii_case("bearer ") => v[7..].trim(),
+        _ => headers
+            .get("x-management-key")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .trim(),
+    };
     if app.key.is_empty() || !constant_time_eq(given.as_bytes(), app.key.as_bytes()) {
         return (
             StatusCode::UNAUTHORIZED,
@@ -67,16 +73,18 @@ async fn push(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes) -> R
         )
             .into_response()
     };
-    let batch = match ingest::decode(&body, gzip) {
-        Ok(batch) => batch,
-        Err(message) => return bad(message),
-    };
-    if let Some(message) = ingest::validate(&batch, &app.store.local().id) {
-        return bad(message);
-    }
+    let local = app.store.local().id.clone();
     let store = app.store.clone();
-    match tokio::task::spawn_blocking(move || store.apply(&batch, false)).await {
-        Ok(Ok(result)) => axum::Json(json!({
+    let saved = tokio::task::spawn_blocking(move || {
+        let batch = ingest::decode(&body, gzip)?;
+        if let Some(message) = ingest::validate(&batch, &local) {
+            return Err(message);
+        }
+        Ok(store.apply(&batch, false))
+    });
+    match saved.await {
+        Ok(Err(message)) => bad(message),
+        Ok(Ok(Ok(result))) => axum::Json(json!({
             "accepted": result.accepted,
             "updated": result.updated,
             "deleted": result.deleted,

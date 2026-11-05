@@ -8,6 +8,7 @@
 //! thread and device from its session's latest transcript record.
 
 use std::collections::{BTreeSet, HashMap};
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -16,11 +17,12 @@ use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use tokio::sync::watch;
 
 use crate::event::{Applied, Batch, Device, Event};
-use crate::pricing::Policy;
+use crate::pricing::{Policy, raw_model};
 
 const SCHEMA: &str = "
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
+PRAGMA journal_size_limit = 67108864;
 CREATE TABLE IF NOT EXISTS devices (
   id TEXT PRIMARY KEY,
   label TEXT NOT NULL,
@@ -78,7 +80,8 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_rev ON events (rev);
 CREATE INDEX IF NOT EXISTS events_session ON events (harness, session_id, ts);
 CREATE INDEX IF NOT EXISTS events_response ON events (harness, response_key) WHERE response_key IS NOT NULL;
-CREATE INDEX IF NOT EXISTS events_request ON events (harness, request_key, model) WHERE request_key IS NOT NULL;
+DROP INDEX IF EXISTS events_request;
+CREATE INDEX IF NOT EXISTS events_request_raw ON events (harness, request_key, raw_model) WHERE request_key IS NOT NULL;
 CREATE TABLE IF NOT EXISTS cursors (
   path TEXT PRIMARY KEY,
   inode INTEGER NOT NULL,
@@ -91,7 +94,7 @@ CREATE INDEX IF NOT EXISTS events_proxy ON events (account_id, millis) WHERE sou
 const HAS_RECEIPT: &str = "(EXISTS (SELECT 1 FROM events p WHERE p.source = 'proxy' AND p.gone = 0 \
     AND p.harness = events.harness AND p.response_key = events.response_key) OR EXISTS (SELECT 1 FROM events p \
     WHERE p.source = 'proxy' AND p.gone = 0 AND p.harness = events.harness AND p.request_key = events.request_key \
-    AND p.model = events.model))";
+    AND p.raw_model = events.raw_model))";
 
 static UPSERT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     format!(
@@ -140,6 +143,7 @@ pub struct Store {
 impl Store {
     pub fn open(path: &Path, local: Device, policy: Arc<Policy>) -> Result<Self> {
         let write = Connection::open(path)?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
         write.execute_batch(SCHEMA)?;
         write.busy_timeout(std::time::Duration::from_secs(30))?;
         let read = Connection::open(path)?;
@@ -178,8 +182,8 @@ impl Store {
         if id.trim().is_empty() || id.len() > 200 {
             bail!("a valid device id is required");
         }
-        let policy = self.policy.lock().unwrap().clone();
         let mut db = self.write.lock().unwrap();
+        let policy = self.policy.lock().unwrap().clone();
         let tx = db.transaction()?;
         let mut result = Applied::default();
         let created = !exists(&tx, "SELECT 1 FROM devices WHERE id = ?1", id)?;
@@ -254,113 +258,19 @@ impl Store {
         Ok(())
     }
 
-    /// Whether the store holds no records yet, so history can load in bulk.
-    pub fn is_empty(&self) -> Result<bool> {
-        let db = self.read.lock().unwrap();
-        Ok(!db.prepare("SELECT 1 FROM records LIMIT 1")?.exists([])?)
-    }
-
-    /// Stores a device's records as they are, without resolving; `resolve_all` follows.
-    pub fn load(&self, device: &Device, events: impl IntoIterator<Item = Event>) -> Result<usize> {
+    /// Prices every record again under a new policy, from its raw copy, as on write.
+    pub fn set_policy(&self, policy: Arc<Policy>) -> Result<()> {
         let mut db = self.write.lock().unwrap();
+        *self.policy.lock().unwrap() = policy.clone();
         let tx = db.transaction()?;
-        tx.execute(
-            "INSERT INTO devices (id, label, synced_at) VALUES (?1, ?2, ?3) ON CONFLICT (id) DO UPDATE SET \
-             label = CASE WHEN ?2 <> '' THEN ?2 ELSE label END, synced_at = coalesce(?3, synced_at)",
-            params![device.id, device.label, device.synced_at],
-        )?;
-        let mut count = 0;
-        {
-            let mut insert = tx.prepare(
-                "INSERT OR REPLACE INTO records (device, id, harness, total, event) VALUES (?1, ?2, ?3, ?4, ?5)",
-            )?;
-            for e in events {
-                insert.execute(params![
-                    device.id,
-                    e.id,
-                    e.harness,
-                    e.token_total(),
-                    serde_json::to_string(&e)?
-                ])?;
-                count += 1;
-            }
-        }
-        tx.commit()?;
-        Ok(count)
-    }
-
-    /// Rebuilds every resolved row from the records, as after a bulk import.
-    pub fn resolve_all(&self) -> Result<()> {
-        let policy = self.policy.lock().unwrap().clone();
-        let mut db = self.write.lock().unwrap();
-        let tx = db.transaction()?;
-        tx.execute("DELETE FROM events", [])?;
-        let resolver = Resolver::new(&tx, &self.local.id, &policy)?;
-        let mut winners = tx.prepare(
-            "SELECT event FROM (SELECT event, row_number() OVER (PARTITION BY harness, id \
-             ORDER BY total DESC, device = ?1 DESC, device ASC) AS rank FROM records) WHERE rank = 1",
-        )?;
-        let mut rows = winners.query([&self.local.id])?;
-        let mut proxies = Vec::new();
-        while let Some(row) = rows.next()? {
-            let e: Event = serde_json::from_str(row.get_ref(0)?.as_str()?)?;
-            resolver.insert(&e)?;
-            if e.is_proxy() {
-                proxies.push((e.harness, e.id));
-            }
-        }
-        drop(rows);
-        drop(winners);
-        tracing::info!("resolved {} records", proxies.len());
-        tx.execute(
-            &format!("UPDATE events SET hidden = {HAS_RECEIPT} WHERE source <> 'proxy'"),
-            [],
-        )?;
-        tracing::info!("hid transcript records the proxy answered for");
-        for (harness, id) in &proxies {
-            resolver.reconcile(harness, id)?;
-        }
+        let keys = tx
+            .prepare("SELECT harness, id FROM events WHERE gone = 0")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<BTreeSet<(String, String)>>>()?;
+        Resolver::new(&tx, &self.local.id, &policy)?.resolve(&keys)?;
         tx.commit()?;
         self.changed();
         Ok(())
-    }
-
-    /// Applies a new pricing policy to every resolved row.
-    pub fn set_policy(&self, policy: Arc<Policy>) -> Result<usize> {
-        *self.policy.lock().unwrap() = policy.clone();
-        let mut db = self.write.lock().unwrap();
-        let tx = db.transaction()?;
-        let rev = next_rev(&tx)?;
-        let rows: Vec<Event> = tx
-            .prepare(&format!("SELECT {COLUMNS} FROM events WHERE gone = 0"))?
-            .query_map([], read_event)?
-            .collect::<rusqlite::Result<_>>()?;
-        let mut changed = 0;
-        {
-            let mut update = tx.prepare(
-                "UPDATE events SET model = ?3, raw_model = ?4, cost_usd = ?5, cost_known = ?6, rev = ?7 \
-                 WHERE harness = ?1 AND id = ?2",
-            )?;
-            for e in rows {
-                if let Some(p) = policy.reprice(&e) {
-                    update.execute(params![
-                        p.harness,
-                        p.id,
-                        p.model,
-                        p.raw_model,
-                        p.cost_usd,
-                        p.cost_known,
-                        rev
-                    ])?;
-                    changed += 1;
-                }
-            }
-        }
-        tx.commit()?;
-        if changed > 0 {
-            self.changed();
-        }
-        Ok(changed)
     }
 
     /// Rows changed since `rev` (all of them for -1) in timestamp and id order, each with
@@ -485,6 +395,14 @@ impl Store {
     }
 
     /// One device's stored records, as it sent them.
+    pub fn device_ids(&self, device: &str) -> Result<Vec<String>> {
+        let db = self.read.lock().unwrap();
+        Ok(db
+            .prepare("SELECT id FROM records WHERE device = ?1")?
+            .query_map([device], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn device_records(&self, device: &str) -> Result<Vec<Event>> {
         let db = self.read.lock().unwrap();
         let rows = db
@@ -652,7 +570,7 @@ impl<'a> Resolver<'a> {
                 identities.insert((e.harness.clone(), r, None));
             }
             if let Some(r) = request_identity(e) {
-                identities.insert((e.harness.clone(), r, Some(e.model.clone())));
+                identities.insert((e.harness.clone(), r, Some(raw_model(e).to_string())));
             }
             sessions.insert((e.harness.clone(), e.session_id.clone()));
         };
@@ -678,7 +596,7 @@ impl<'a> Resolver<'a> {
         }
         for (harness, key, model) in &identities {
             let (filter, args): (&str, Vec<&dyn rusqlite::ToSql>) = match model {
-                Some(m) => ("request_key = ?2 AND model = ?3", vec![harness, key, m]),
+                Some(m) => ("request_key = ?2 AND raw_model = ?3", vec![harness, key, m]),
                 None => ("response_key = ?2", vec![harness, key]),
             };
             let rev = format!("?{}", args.len() + 1);
@@ -807,10 +725,10 @@ impl<'a> Resolver<'a> {
         let matched = match (matched, request_identity(&wire)) {
             (None, Some(r)) => transcript(
                 &format!(
-                    "SELECT {COLUMNS} FROM events WHERE source <> 'proxy' AND gone = 0 AND harness = ?1 AND request_key = ?2 AND model = ?3 \
+                    "SELECT {COLUMNS} FROM events WHERE source <> 'proxy' AND gone = 0 AND harness = ?1 AND request_key = ?2 AND raw_model = ?3 \
                      ORDER BY ts DESC LIMIT 1"
                 ),
-                &[&harness, &r, &wire.model],
+                &[&harness, &r, &raw_model(&wire)],
             )?,
             (m, _) => m,
         };
@@ -819,8 +737,8 @@ impl<'a> Resolver<'a> {
         }
         let latest = transcript(
             &format!(
-                "SELECT {COLUMNS} FROM events WHERE source <> 'proxy' AND gone = 0 AND harness = ?1 AND session_id = ?2 \
-                 ORDER BY ts DESC, device_id = ?3 ASC, device_id ASC LIMIT 1"
+                "SELECT {COLUMNS} FROM events INDEXED BY events_session WHERE source <> 'proxy' AND gone = 0 AND harness = ?1 AND session_id = ?2 \
+                 ORDER BY ts DESC, device_id = ?3 ASC, device_id ASC, id ASC LIMIT 1"
             ),
             &[&harness, &resolved.session_id, &self.local],
         )?;
