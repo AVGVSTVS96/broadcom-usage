@@ -15,12 +15,13 @@ flate2 = "1"
 foldhash = "0.2"
 form_urlencoded = "1"
 indexmap = { version = "2", features = ["serde"] }
+memchr = "2"
 mimalloc = "0.1"
 notify = "8"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip"] }
-schemars = { version = "1", features = ["indexmap2"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
+schemars = { version = "1", features = ["indexmap2"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip", "raw_value"] }
 sha2 = "0.10"
@@ -28,6 +29,7 @@ tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 
 [dev-dependencies]
