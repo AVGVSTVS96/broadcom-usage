@@ -77,6 +77,11 @@ CREATE INDEX IF NOT EXISTS events_time ON events (millis) WHERE hidden = 0;
 CREATE INDEX IF NOT EXISTS events_session ON events (harness, session_id, ts);
 CREATE INDEX IF NOT EXISTS events_response ON events (harness, response_key) WHERE response_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS events_request ON events (harness, request_key, model) WHERE request_key IS NOT NULL;
+CREATE TABLE IF NOT EXISTS cursors (
+  path TEXT PRIMARY KEY,
+  inode INTEGER NOT NULL,
+  offset INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS events_proxy ON events (account_id, millis) WHERE source = 'proxy';
 ";
 
@@ -190,6 +195,52 @@ impl Store {
             self.changed();
         }
         Ok(result)
+    }
+
+    /// Where a followed file was read up to: (inode, offset).
+    pub fn cursor(&self, path: &str) -> Result<Option<(u64, u64)>> {
+        let db = self.read.lock().unwrap();
+        Ok(db
+            .prepare_cached("SELECT inode, offset FROM cursors WHERE path = ?1")?
+            .query_row([path], |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64)))
+            .optional()?)
+    }
+
+    pub fn set_cursor(&self, path: &str, inode: u64, offset: u64) -> Result<()> {
+        self.write.lock().unwrap().execute(
+            "INSERT OR REPLACE INTO cursors (path, inode, offset) VALUES (?1, ?2, ?3)",
+            params![path, inode as i64, offset as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Whether the store holds no records yet, so history can load in bulk.
+    pub fn is_empty(&self) -> Result<bool> {
+        let db = self.read.lock().unwrap();
+        Ok(!db.prepare("SELECT 1 FROM records LIMIT 1")?.exists([])?)
+    }
+
+    /// Stores a device's records as they are, without resolving; `resolve_all` follows.
+    pub fn load(&self, device: &Device, events: impl IntoIterator<Item = Event>) -> Result<usize> {
+        let mut db = self.write.lock().unwrap();
+        let tx = db.transaction()?;
+        tx.execute(
+            "INSERT INTO devices (id, label, synced_at) VALUES (?1, ?2, ?3) ON CONFLICT (id) DO UPDATE SET \
+             label = CASE WHEN ?2 <> '' THEN ?2 ELSE label END, synced_at = coalesce(?3, synced_at)",
+            params![device.id, device.label, device.synced_at],
+        )?;
+        let mut count = 0;
+        {
+            let mut insert = tx.prepare(
+                "INSERT OR REPLACE INTO records (device, id, harness, total, event) VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for e in events {
+                insert.execute(params![device.id, e.id, e.harness, e.token_total(), serde_json::to_string(&e)?])?;
+                count += 1;
+            }
+        }
+        tx.commit()?;
+        Ok(count)
     }
 
     /// Rebuilds every resolved row from the records, as after a bulk import.

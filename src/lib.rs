@@ -1,5 +1,9 @@
 pub mod collect;
+pub mod config;
 pub mod event;
+pub mod follow;
+pub mod ingest;
 pub mod pricing;
 pub mod store;
+pub mod stream;
 pub mod views;
