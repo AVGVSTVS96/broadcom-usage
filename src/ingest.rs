@@ -18,7 +18,10 @@ pub fn decode(body: &[u8], gzip: bool) -> Result<Batch, &'static str> {
     } else {
         text = body.to_vec();
     }
-    serde_json::from_slice(&text).map_err(|_| "invalid usage batch")
+    serde_json::from_slice(&text).map_err(|err| {
+        tracing::warn!(%err, "rejected a pushed usage batch");
+        "invalid usage batch"
+    })
 }
 
 /// Why a batch can't be stored, or None.
@@ -124,6 +127,16 @@ mod tests {
             .is_some()
         );
         assert!(validate(&batch("laptop", vec![event(); MAX_RECORDS + 1]), "server").is_some());
+    }
+
+    #[test]
+    fn reads_go_null_lists() {
+        let batch = decode(
+            br#"{"device":{"id":"laptop","label":"m"},"events":null,"deletedIds":null}"#,
+            false,
+        )
+        .unwrap();
+        assert!(batch.events.is_empty() && batch.deleted_ids.is_empty());
     }
 
     #[test]

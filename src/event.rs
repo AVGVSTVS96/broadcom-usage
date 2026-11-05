@@ -127,10 +127,24 @@ pub struct Device {
 pub struct Batch {
     #[serde(default)]
     pub device: Device,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub events: Vec<Event>,
-    #[serde(default, rename = "deletedIds", skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        rename = "deletedIds",
+        deserialize_with = "null_as_empty",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub deleted_ids: Vec<String>,
+}
+
+/// Go writes an empty slice as `null`.
+fn null_as_empty<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::deserialize(deserializer).map(Option::unwrap_or_default)
 }
 
 /// What a batch changed.
