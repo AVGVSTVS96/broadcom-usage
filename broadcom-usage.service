@@ -1,0 +1,11 @@
+[Unit]
+Description=broadcom-usage: AI agent usage and BROADCOM's usage views
+After=network-online.target
+
+[Service]
+ExecStart=%h/.cargo/bin/broadcom-usage serve --config %h/.config/broadcom-usage/config.json
+Restart=on-failure
+Nice=5
+
+[Install]
+WantedBy=default.target
