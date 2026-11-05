@@ -68,12 +68,55 @@ pub fn pricing_from(r: Range, zone: Tz, now: i64) -> f64 {
         as f64
 }
 
-/// Account labels from the pool's account list (accounts.json): id → email.
-pub fn account_labels(accounts_file: &Path) -> std::collections::HashMap<String, String> {
-    plans::read_json::<plans::AccountList>(accounts_file)
+/// Account labels: each account's email (accounts.json), and each API-credit key named
+/// for the account its credit belongs to (credits.json).
+pub fn account_labels(
+    accounts_file: &Path,
+    credits_file: Option<&Path>,
+) -> std::collections::HashMap<String, String> {
+    let mut labels: std::collections::HashMap<String, String> =
+        plans::read_json::<plans::AccountList>(accounts_file)
+            .unwrap_or_default()
+            .accounts
+            .into_iter()
+            .map(|a| (a.id, a.email))
+            .collect();
+    for grant in credits_file
+        .and_then(|f| credits::read_grants(f).ok())
         .unwrap_or_default()
-        .accounts
-        .into_iter()
-        .map(|a| (a.id, a.email))
-        .collect()
+    {
+        if let Some(email) = labels
+            .get(&grant.account)
+            .filter(|_| !labels.contains_key(&grant.credential_id))
+        {
+            let label = format!("{email} API credit");
+            labels.insert(grant.credential_id, label);
+        }
+    }
+    labels
+}
+
+#[cfg(test)]
+mod label_tests {
+    #[test]
+    fn api_credit_keys_take_their_accounts_name() {
+        let dir =
+            std::env::temp_dir().join(format!("broadcom-usage-labels-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (accounts, credits) = (dir.join("accounts.json"), dir.join("credits.json"));
+        std::fs::write(
+            &accounts,
+            r#"{"accounts":[{"id":"acct","email":"me@example.com","tier":"max 20x"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &credits,
+            r#"[{"startsAt":0,"account":"acct","organization":"Org","credentialId":"claude:apikey:abc","remaining":1,"allowance":1,"monthlyCap":1,"observedAt":0,"expiresAt":0,"renewsAt":0}]"#,
+        )
+        .unwrap();
+        let labels = super::account_labels(&accounts, Some(&credits));
+        assert_eq!(labels["acct"], "me@example.com");
+        assert_eq!(labels["claude:apikey:abc"], "me@example.com API credit");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

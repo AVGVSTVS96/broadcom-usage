@@ -140,7 +140,7 @@ fn parity() {
     let hex = dir.join("deck/hex");
     let names = load_names(&hex, &read_past(&hex).unwrap()).unwrap();
     let labels = Labels {
-        accounts: account_labels(&state.join("accounts.json")),
+        accounts: account_labels(&state.join("accounts.json"), None),
         devices: tracked[&Range::Week]
             .devices
             .iter()

@@ -276,7 +276,10 @@ impl Deck {
 
     fn labels(&self, tracked: &SessionUsage) -> Labels {
         Labels {
-            accounts: views::account_labels(&self.config.accounts_file),
+            accounts: views::account_labels(
+                &self.config.accounts_file,
+                Some(&self.config.pool_dir.join("credits.json")),
+            ),
             devices: tracked
                 .devices
                 .iter()
