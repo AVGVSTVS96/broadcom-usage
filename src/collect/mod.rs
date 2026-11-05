@@ -197,8 +197,8 @@ impl Collector {
     pub fn collect(
         &mut self,
         policy: &Policy,
-        deliver: impl FnOnce(&Collection) -> Result<()>,
-    ) -> Result<Collection> {
+        deliver: impl FnOnce(Collection) -> Result<()>,
+    ) -> Result<()> {
         let (logs, mut warnings) = list_logs(&self.sources);
         let cached = cache::files(&self.db)?;
         let cold = cached.is_empty();
@@ -271,7 +271,7 @@ impl Collector {
         let picked: HashSet<i64> = if cold {
             ids.values().copied().collect()
         } else {
-            affected(&tx, seeds)?
+            cache::affected(&tx, &seeds)?
         };
         let mut files: Vec<Parsed> = Vec::with_capacity(picked.len() + grok_files.len());
         for (i, log) in logs.iter().enumerate() {
@@ -288,9 +288,9 @@ impl Collector {
         let mut collection = build(files, &t3_now, policy, &self.device_id);
         warnings.append(&mut collection.warnings);
         collection.warnings = warnings;
-        deliver(&collection)?;
+        deliver(collection)?;
         tx.commit()?;
-        Ok(collection)
+        Ok(())
     }
 }
 
@@ -470,28 +470,6 @@ fn parse_all(
     results.into_inner().unwrap()
 }
 
-/// The cached files whose records can change with the given links: every file sharing
-/// an id or session with them, and with those files, until no new file is reached.
-fn affected(tx: &rusqlite::Transaction, seeds: HashSet<Link>) -> Result<HashSet<i64>> {
-    let mut picked = HashSet::new();
-    let mut seen: HashSet<Link> = HashSet::new();
-    let mut links: Vec<Link> = seeds.into_iter().collect();
-    while let Some(link) = links.pop() {
-        if !seen.insert(link) {
-            continue;
-        }
-        for file in cache::files_linked(tx, link)? {
-            if picked.insert(file) {
-                links.extend(
-                    cache::links_of(tx, file)?
-                        .into_iter()
-                        .filter(|l| !seen.contains(l)),
-                );
-            }
-        }
-    }
-    Ok(picked)
-}
 
 fn event(u: &Usage) -> Event {
     Event {
@@ -617,5 +595,133 @@ fn build(
         events,
         retracted_ids: retracted,
         warnings,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Fixture {
+        root: PathBuf,
+        collector: Collector,
+    }
+
+    fn claude_line(session: &str, request: &str, message: &str, input: i64, sidechain: bool) -> String {
+        format!(
+            r#"{{"type":"assistant","isSidechain":{sidechain},"sessionId":"{session}","requestId":"{request}","timestamp":"2026-01-01T00:00:0{input}.000Z","cwd":"/w","message":{{"id":"{message}","model":"claude-opus-4-5","usage":{{"input_tokens":{input},"output_tokens":1}}}}}}"#
+        )
+    }
+
+    impl Fixture {
+        fn new(name: &str) -> Fixture {
+            let root = std::env::temp_dir().join(format!("collect-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(root.join("claude/projects/p/s1/subagents")).unwrap();
+            let collector = Fixture::open(&root);
+            Fixture { root, collector }
+        }
+
+        fn open(root: &Path) -> Collector {
+            let none = vec![root.join("none")];
+            let sources = Sources {
+                home: Some(root.to_path_buf()),
+                claude: vec![root.join("claude")],
+                codex: none.clone(),
+                pi: none.clone(),
+                grok: none.clone(),
+                muse: none,
+                t3_data: Some(root.join("none")),
+                device_id: "test".into(),
+                ..Default::default()
+            };
+            Collector::open(sources, &root.join("cache.sqlite")).unwrap()
+        }
+
+        fn append(&self, file: &str, lines: &[String]) {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(self.root.join(file)).unwrap();
+            for line in lines {
+                writeln!(f, "{line}").unwrap();
+            }
+        }
+
+        fn pass(&mut self) -> Collection {
+            let mut out = Collection::default();
+            self.collector.collect(&Policy::bundled(), |c| Ok(out = c)).unwrap();
+            out
+        }
+
+        fn ids(&mut self) -> Vec<String> {
+            self.pass().events.into_iter().map(|e| e.id).collect()
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn passes_return_only_what_changed() {
+        let mut f = Fixture::new("passes");
+        f.append("claude/projects/p/s1.jsonl", &[claude_line("s1", "r1", "m1", 1, false)]);
+        f.append("claude/projects/p/s1/subagents/agent-a.jsonl", &[claude_line("s1", "r9", "m1", 2, true)]);
+        f.append("claude/projects/p/s2.jsonl", &[claude_line("s2", "r2", "m2", 3, false)]);
+        let cold = f.pass();
+        assert_eq!(cold.events.len(), 2);
+        assert_eq!(cold.retracted_ids, ["claude:message:m1:r9"]);
+        assert!(f.ids().is_empty());
+        f.collector = Fixture::open(&f.root);
+        assert!(f.ids().is_empty(), "a restart parses nothing new");
+
+        f.append("claude/projects/p/s1.jsonl", &[claude_line("s1", "r4", "m4", 4, false)]);
+        assert_eq!(f.ids(), ["claude:message:m1:r1", "claude:message:m4:r4"]);
+        let warm = f.pass().events;
+        assert!(warm.is_empty());
+
+        let fresh_root = f.root.with_extension("fresh");
+        let _ = std::fs::remove_dir_all(&fresh_root);
+        copy_dir(&f.root.join("claude"), &fresh_root.join("claude"));
+        let mut fresh = Fixture { collector: Fixture::open(&fresh_root), root: fresh_root };
+        let mut all = fresh.pass().events;
+        all.retain(|e| e.session_id == "s1");
+        f.append("claude/projects/p/s1.jsonl", &[claude_line("s1", "r5", "m5", 5, false)]);
+        fresh.append("claude/projects/p/s1.jsonl", &[claude_line("s1", "r5", "m5", 5, false)]);
+        let appended = f.pass().events;
+        let expected: Vec<Event> = fresh.pass().events.into_iter().filter(|e| e.session_id == "s1").collect();
+        assert_eq!(appended, expected, "an appended log reads the same as a fresh parse");
+        assert_eq!(all.len() + 1, appended.len());
+    }
+
+    #[test]
+    fn a_failed_delivery_comes_back() {
+        let mut f = Fixture::new("delivery");
+        f.append("claude/projects/p/s1.jsonl", &[claude_line("s1", "r1", "m1", 1, false)]);
+        let failed = f.collector.collect(&Policy::bundled(), |_| anyhow::bail!("store is down"));
+        assert!(failed.is_err());
+        assert_eq!(f.ids(), ["claude:message:m1:r1"]);
+        assert!(f.ids().is_empty());
+    }
+
+    #[test]
+    fn a_rewritten_log_is_parsed_whole() {
+        let mut f = Fixture::new("rewrite");
+        f.append("claude/projects/p/s1.jsonl", &[claude_line("s1", "r1", "m1", 1, false)]);
+        f.pass();
+        std::fs::write(f.root.join("claude/projects/p/s1.jsonl"), claude_line("s1", "r2", "m2", 2, false) + "\n").unwrap();
+        assert_eq!(f.ids(), ["claude:message:m2:r2"]);
+    }
+
+    fn copy_dir(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap().flatten() {
+            if entry.file_type().unwrap().is_dir() {
+                copy_dir(&entry.path(), &to.join(entry.file_name()));
+            } else {
+                std::fs::copy(entry.path(), to.join(entry.file_name())).unwrap();
+            }
+        }
     }
 }

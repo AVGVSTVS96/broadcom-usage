@@ -125,10 +125,27 @@ pub fn links_of(tx: &Transaction, file: i64) -> Result<Vec<Link>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-pub fn files_linked(tx: &Transaction, link: Link) -> Result<Vec<i64>> {
-    let mut statement = tx.prepare_cached("SELECT file FROM links WHERE link = ?")?;
-    let rows = statement.query_map([link], |r| r.get(0))?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+/// The cached files whose records can change with the given links: every file sharing
+/// a link with them, and with those files, until no new file is reached.
+pub fn affected(tx: &Transaction, seeds: &HashSet<Link>) -> Result<HashSet<i64>> {
+    tx.execute("CREATE TEMP TABLE IF NOT EXISTS seeds (link INTEGER PRIMARY KEY)", [])?;
+    let mut insert = tx.prepare_cached("INSERT OR IGNORE INTO temp.seeds (link) VALUES (?)")?;
+    for link in seeds {
+        insert.execute([link])?;
+    }
+    let mut statement = tx.prepare_cached(
+        "WITH RECURSIVE reach (file) AS (
+             SELECT links.file FROM temp.seeds JOIN links ON links.link = seeds.link
+             UNION
+             SELECT next.file FROM reach
+                 JOIN links AS mine ON mine.file = reach.file
+                 JOIN links AS next ON next.link = mine.link
+         )
+         SELECT file FROM reach",
+    )?;
+    let files = statement.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+    tx.execute("DELETE FROM temp.seeds", [])?;
+    Ok(files)
 }
 
 pub fn links(parsed: &Parsed) -> HashSet<Link> {

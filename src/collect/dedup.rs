@@ -1,6 +1,6 @@
 //! Cross-file deduplication over one pass's parsed logs, which it may rewrite in place.
 
-use std::collections::{HashMap, HashSet};
+use foldhash::{HashMap, HashMapExt, HashSet};
 
 use super::parse::{Candidate, Harness, Parsed, Usage, project_text};
 
@@ -149,7 +149,7 @@ fn filter_pi_replays(files: &mut [Parsed]) {
             let (mut session, mut id) = (entry.usage.session_id.clone(), entry.usage.id.clone());
             let (mut owner_parent, mut owner_forked) =
                 (file.parent_id.clone(), file.forked_at.clone());
-            let mut visited = HashSet::from([file.session_id.clone()]);
+            let mut visited = std::collections::HashSet::from([file.session_id.clone()]);
             while !owner_parent.is_empty() && !visited.contains(&owner_parent) {
                 let inherited = native.get(&owner_parent).is_some_and(|set| {
                     set.contains(&format!("{native_id}:{}", entry.usage.timestamp))
@@ -288,7 +288,7 @@ fn apply_muse_parent_projects(files: &mut [Parsed]) {
     for &i in &sessions {
         let file = &mut files[i];
         let mut project = projects.get(&file.session_id).cloned().unwrap_or_default();
-        let mut visited = HashSet::from([file.session_id.clone()]);
+        let mut visited = std::collections::HashSet::from([file.session_id.clone()]);
         let mut parent = parents.get(&file.session_id).cloned().unwrap_or_default();
         while project.is_empty() && !parent.is_empty() && visited.insert(parent.clone()) {
             project = projects.get(&parent).cloned().unwrap_or_default();
@@ -412,8 +412,8 @@ mod tests {
         let mut files = vec![parent, fork];
         filter_replays(&mut files);
         let (entries, _) = deduplicate(&files);
-        let ids: HashSet<&str> = entries.iter().map(|e| e.usage.id.as_str()).collect();
-        assert_eq!(ids, HashSet::from(["pi:aaa:e1", "pi:bbb:e2"]));
+        let ids: std::collections::HashSet<&str> = entries.iter().map(|e| e.usage.id.as_str()).collect();
+        assert_eq!(ids, std::collections::HashSet::from(["pi:aaa:e1", "pi:bbb:e2"]));
         assert_eq!(files[1].retracted_ids, ["pi:bbb:e1"]);
     }
 }

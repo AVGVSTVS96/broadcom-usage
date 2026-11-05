@@ -1348,6 +1348,40 @@ pub mod tests {
     }
 
     #[test]
+    #[ignore = "reads the Claude logs under COLLECT_LOGS"]
+    fn resume_matches_a_whole_parse_on_real_logs() {
+        let Ok(root) = std::env::var("COLLECT_LOGS") else { return };
+        let mut pending = vec![std::path::PathBuf::from(root)];
+        let mut checked = 0;
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    pending.push(path);
+                    continue;
+                }
+                let data = std::fs::read(&path).unwrap();
+                let name = path.to_string_lossy();
+                let mut whole = Claude::default();
+                whole.read(&mut &data[..], &name, 0).unwrap();
+                let whole = whole.finish();
+                for third in [1, 2] {
+                    let Some(split) = data[..data.len() * third / 3].iter().rposition(|&b| b == b'\n') else { continue };
+                    let mut head = Claude::default();
+                    let read = head.read(&mut &data[..=split], &name, 0).unwrap();
+                    let mut resumed = Claude::resume(head.finish());
+                    resumed.read(&mut &data[split + 1..], &name, read.lines).unwrap();
+                    let mut resumed = resumed.finish();
+                    resumed.malformed = whole.malformed;
+                    assert_eq!(resumed, whole, "{name} split at {split}");
+                }
+                checked += 1;
+            }
+        }
+        eprintln!("{checked} logs resume exactly");
+    }
+
+    #[test]
     fn codex_counters_become_requests() {
         let parent = parse_codex(
             &mut lines(&[
