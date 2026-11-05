@@ -63,7 +63,10 @@ fn parity() {
         .to_vec();
 
     let started = Instant::now();
-    let prepared = prepare(&events);
+    let rows: Vec<Row> = events.iter().map(Row::from).collect();
+    eprintln!("rows {:?}", started.elapsed());
+    let started = Instant::now();
+    let prepared = prepare(&rows);
     let pricing = PlanPricing::new(&plans, &prepared, zone, now);
     let limits = LimitInputs::new(&readings, &bindings, AgentSdk::default());
     eprintln!("prepare, plan pricing and bindings {:?}", started.elapsed());
@@ -88,11 +91,9 @@ fn parity() {
         );
 
         let from = reads_from(r, zone, now, &readings).min(pricing_from(r, zone, now));
-        let span: Vec<Event> = events
+        let span: Vec<Row> = rows
             .iter()
-            .filter(|e| {
-                parse_millis(&e.timestamp).partial_cmp(&from) != Some(std::cmp::Ordering::Less)
-            })
+            .filter(|row| row.millis.partial_cmp(&from) != Some(std::cmp::Ordering::Less))
             .cloned()
             .collect();
         let started = Instant::now();

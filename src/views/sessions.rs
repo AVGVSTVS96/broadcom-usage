@@ -14,9 +14,10 @@ use super::limits::{
 };
 use super::plans::PlanPricing;
 use super::timeframe::{
-    Range, bucket_starts, locale_compare, parse_millis, provider, usage_timeframe,
+    Range, bucket_starts, locale_compare, provider, usage_timeframe,
 };
-use crate::event::{Device, Event};
+use super::row::Row;
+use crate::event::Device;
 
 /// The account of requests bound to no account, such as Codex or unpooled sessions.
 pub const NO_ACCOUNT: &str = "none";
@@ -173,39 +174,35 @@ pub struct SessionUsage {
     pub sdk_factor: f64,
 }
 
-/// An event with what every view derives from it.
+/// A record with what every view derives from it.
 #[derive(Debug, Clone, Copy)]
 pub struct Prepared<'a> {
-    pub event: &'a Event,
-    pub millis: f64,
+    pub row: &'a Row,
     pub provider: &'static str,
     pub tokens: f64,
 }
 
 impl Deref for Prepared<'_> {
-    type Target = Event;
+    type Target = Row;
 
-    fn deref(&self) -> &Event {
-        self.event
+    fn deref(&self) -> &Row {
+        self.row
     }
 }
 
-pub fn prepare(events: &[Event]) -> Vec<Prepared<'_>> {
+/// Rows in Go's (timestamp, id) order, as `Store::rows_since` returns them.
+pub fn prepare(rows: &[Row]) -> Vec<Prepared<'_>> {
     let mut providers: HashMap<&str, &'static str> = HashMap::new();
-    events
-        .iter()
-        .map(|event| Prepared {
-            event,
-            millis: parse_millis(&event.timestamp),
-            provider: providers
-                .entry(&event.model)
-                .or_insert_with(|| provider(&event.model)),
-            tokens: event.token_total() as f64,
+    rows.iter()
+        .map(|row| Prepared {
+            row,
+            provider: providers.entry(&row.model).or_insert_with(|| provider(&row.model)),
+            tokens: row.token_total() as f64,
         })
         .collect()
 }
 
-fn device_of(event: &Event) -> &str {
+fn device_of(event: &Row) -> &str {
     if event.device_id.is_empty() {
         "local"
     } else {
@@ -240,7 +237,7 @@ impl LimitInputs {
     }
 }
 
-struct Row {
+struct Tally {
     session: Session,
     series: BTreeMap<usize, [f64; 6]>,
     limits: HashMap<String, usize>,
@@ -284,7 +281,7 @@ pub fn session_usage(
     let mut previous = Amount::default();
     let mut previous_sessions = HashSet::new();
     let mut index: HashMap<String, usize> = HashMap::new();
-    let mut rows: Vec<Row> = Vec::new();
+    let mut rows: Vec<Tally> = Vec::new();
     for (i, event) in events.iter().enumerate() {
         let millis = event.millis;
         if millis.is_nan() || millis > now_millis || millis < previous_start || millis >= end {
@@ -302,18 +299,15 @@ pub fn session_usage(
             Some(&at) => at,
             None => {
                 index.insert(key.clone(), rows.len());
-                rows.push(Row {
+                rows.push(Tally {
                     session: Session {
                         key,
                         device_id: device.to_string(),
-                        harness: event.harness.clone(),
-                        session_id: event.session_id.clone(),
-                        project: event
-                            .repository
-                            .clone()
-                            .unwrap_or_else(|| event.project.clone()),
-                        repository: event.repository.clone(),
-                        cwd: event.project.clone(),
+                        harness: event.harness.to_string(),
+                        session_id: event.session_id.to_string(),
+                        project: event.repository.as_deref().unwrap_or(&event.project).to_string(),
+                        repository: event.repository.as_deref().map(String::from),
+                        cwd: event.project.to_string(),
                         title: None,
                         entrypoint: String::new(),
                         first_at: millis,
@@ -341,11 +335,11 @@ pub fn session_usage(
             row.titled_at = millis;
         }
         if !event.entrypoint.is_empty() {
-            s.entrypoint = event.entrypoint.clone();
+            s.entrypoint = event.entrypoint.to_string();
         }
         s.amount.add_event(event, plan_usd);
         s.models
-            .entry(event.model.clone())
+            .entry(event.model.to_string())
             .or_default()
             .add_event(event, plan_usd);
         let account = limits.map_or("", |l| l.lookup.account_of(event));

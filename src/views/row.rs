@@ -28,6 +28,34 @@ pub struct Row {
     pub requests: Option<i64>,
 }
 
+impl From<&crate::event::Event> for Row {
+    fn from(e: &crate::event::Event) -> Self {
+        Row {
+            millis: super::parse_millis(&e.timestamp),
+            proxy: e.is_proxy(),
+            failed: e.failed,
+            cost_known: e.cost_known,
+            cost_usd: e.cost_usd,
+            harness: e.harness.as_str().into(),
+            model: e.model.as_str().into(),
+            project: e.project.as_str().into(),
+            repository: e.repository.as_deref().map(Arc::from),
+            session_id: e.session_id.as_str().into(),
+            device_id: e.device_id.as_str().into(),
+            session_title: e.session_title.as_str().into(),
+            entrypoint: e.entrypoint.as_str().into(),
+            account_id: e.account_id.as_str().into(),
+            input_tokens: e.input_tokens,
+            output_tokens: e.output_tokens,
+            cache_read_tokens: e.cache_read_tokens,
+            cache_write_tokens: e.cache_write_tokens,
+            unclassified_tokens: e.unclassified_tokens,
+            reasoning_tokens: e.reasoning_tokens,
+            requests: e.requests,
+        }
+    }
+}
+
 impl Row {
     pub fn token_total(&self) -> i64 {
         self.input_tokens + self.output_tokens + self.cache_read_tokens + self.cache_write_tokens + self.unclassified_tokens

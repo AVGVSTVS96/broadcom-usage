@@ -224,12 +224,12 @@ impl AccountLookup {
 
     pub fn account_of<'a>(&'a self, event: &'a Prepared) -> &'a str {
         if !event.account_id.is_empty() {
-            return &event.account_id;
+            return &event.account_id[..];
         }
-        let Some(list) = self.by_session.get(&event.session_id) else {
+        let Some(list) = self.by_session.get(&*event.session_id) else {
             return "";
         };
-        if event.harness != "claude" || event.millis.is_nan() {
+        if &*event.harness != "claude" || event.millis.is_nan() {
             return "";
         }
         let at = list.partition_point(|(millis, _)| *millis <= event.millis);
@@ -243,7 +243,7 @@ impl AccountLookup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::Event;
+    use crate::views::Row;
     use crate::views::sessions::prepare;
 
     fn bind(session: &str, account: &str, event: &str, millis: f64) -> Binding {
@@ -268,14 +268,13 @@ mod tests {
         ]);
         let lookup = AccountLookup::new(&history);
         let at = |session: &str, ms: f64| {
-            let events = [Event {
+            let rows = [Row {
                 harness: "claude".into(),
                 session_id: session.into(),
+                millis: ms,
                 ..Default::default()
             }];
-            let mut prepared = prepare(&events);
-            prepared[0].millis = ms;
-            lookup.account_of(&prepared[0]).to_string()
+            lookup.account_of(&prepare(&rows)[0]).to_string()
         };
         assert_eq!(
             [

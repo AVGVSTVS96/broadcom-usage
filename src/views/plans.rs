@@ -285,6 +285,7 @@ impl PlanPricing {
 mod tests {
     use super::*;
     use crate::event::Event;
+    use crate::views::Row;
     use crate::views::sessions::prepare;
     use chrono::TimeZone;
 
@@ -318,7 +319,8 @@ mod tests {
             event("claude-opus-4-5", "2026-10-10T00:00:00Z", 50.0),
             event("gpt-5", "2026-10-10T00:00:00Z", 70.0),
         ];
-        let prepared = prepare(&events);
+        let rows = events.map(|e| Row::from(&e));
+        let prepared = prepare(&rows);
         let p = PlanPricing::new(&plans, &prepared, utc, now.timestamp_millis());
         assert!((p.price(&prepared[0]) - 310.0).abs() < 1e-9);
         assert!((p.price(&prepared[1]) - 150.0).abs() < 1e-9);

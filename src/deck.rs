@@ -109,8 +109,8 @@ impl Deck {
             .iter()
             .map(|&r| views::reads_from(r, self.zone, now, &readings).min(views::pricing_from(r, self.zone, now)))
             .fold(f64::INFINITY, f64::min);
-        let events = self.store.events_since(if from.is_finite() { from as i64 } else { 0 })?;
-        let prepared = views::prepare(&events);
+        let rows = self.store.rows_since(if from.is_finite() { from as i64 } else { 0 })?;
+        let prepared = views::prepare(&rows);
         let plans = views::read_plans(Some(&self.config.accounts_file), Some(&self.config.pool_dir), &self.config.plans);
         let pricing = PlanPricing::new(&plans, &prepared, self.zone, now);
         let limits = LimitInputs::new(&readings, &bindings, self.config.agent_sdk());

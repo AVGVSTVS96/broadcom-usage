@@ -254,6 +254,7 @@ pub fn attribution_reach(readings: &[LimitReading], from: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::event::Event;
+    use crate::views::Row;
     use crate::views::limits::{Binding, binding_history};
     use crate::views::sessions::prepare;
 
@@ -312,7 +313,7 @@ mod tests {
         let (windows, charges) = attribute_limits(
             &readings,
             &started(&["s1"]),
-            &prepare(&events),
+            &prepare(&events.map(|e| Row::from(&e))),
             &AgentSdk {
                 factor: 1.0,
                 ..AgentSdk::default()
@@ -360,7 +361,7 @@ mod tests {
         let (_, charges) = attribute_limits(
             &readings,
             &started(&["sdk", "tui"]),
-            &prepare(&events),
+            &prepare(&events.map(|e| Row::from(&e))),
             &AgentSdk {
                 factor: 2.0,
                 ..AgentSdk::default()
