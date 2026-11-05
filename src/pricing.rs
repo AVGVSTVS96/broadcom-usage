@@ -658,6 +658,39 @@ mod tests {
         assert_eq!(ruled.revision, "bdfc8da71746171d07ab564de94505ff037a5816eb8787fb9998cbe7ee5bbaaf");
     }
 
+    #[tokio::test]
+    async fn seeds_then_refreshes_its_own_file() {
+        let root = std::env::temp_dir().join(format!("broadcom-usage-pricing-{}", std::process::id()));
+        let seed = root.join("seed").join(FILE);
+        let seeded = State { policy: Arc::new(Policy::new(BUNDLED.clone(), test_rules())), checked_at: None, refresh_error: None };
+        write_state(&seed, &seeded).unwrap();
+        let seed_bytes = std::fs::read(&seed).unwrap();
+
+        let dir = root.join("own");
+        let pricing = Pricing::open(&dir, Some(&seed));
+        assert_eq!(pricing.policy().revision, seeded.policy.revision);
+        assert!(dir.join(FILE).exists());
+
+        let upstream: serde_json::Map<String, Value> = (0..120)
+            .map(|i| (format!("model-{i}"), serde_json::json!({ "input_cost_per_token": 1e-6, "output_cost_per_token": 2e-6, "max_tokens": 10 })))
+            .collect();
+        let app = axum::Router::new().route("/", axum::routing::get(move || async move { Value::Object(upstream).to_string() }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let pricing = Pricing { download: url, ..Pricing::open(&dir, None) };
+        assert_eq!(pricing.until_due(), Duration::ZERO);
+        pricing.refresh().await.unwrap();
+        let policy = pricing.policy();
+        assert_eq!(policy.catalog.models["model-7"], Rates::from([("input_cost_per_token".into(), 1e-6), ("output_cost_per_token".into(), 2e-6)]));
+        assert!(policy.catalog.models.contains_key("gpt-5") && policy.rules == test_rules());
+        assert!(pricing.until_due() > Duration::from_secs(23 * 60 * 60));
+        assert_eq!(Pricing::open(&dir, None).policy().revision, policy.revision);
+        assert_eq!(std::fs::read(&seed).unwrap(), seed_bytes, "the seed file is only read");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn js_numbers() {
         for (f, s) in [(1.0, "1"), (0.1, "0.1"), (1e-7, "1e-7"), (2.5e-6, "0.0000025"), (1e21, "1e+21"), (123e18, "123000000000000000000"), (-1.5, "-1.5")] {
