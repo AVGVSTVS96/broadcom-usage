@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 
 use crate::config::Config;
 use crate::deck::Deck;
-use crate::event::Device;
+use crate::event::{Batch, Device};
 use crate::follow::{self, Followed, Format};
 use crate::github::GitHub;
 use crate::pricing::Pricing;
@@ -75,7 +75,11 @@ pub fn start(app: Arc<App>) {
             });
         })
     });
-    if app.config.go_usage_dir.is_none() && !app.config.github_repos.is_empty() {
+    if app.config.collect {
+        let app = app.clone();
+        std::thread::spawn(move || collect(&app));
+    }
+    if !app.config.github_repos.is_empty() {
         let github = GitHub::new(&app.config.state_dir, app.config.github_repos.clone(), app.pricing.clone());
         let store = app.store.clone();
         tokio::spawn(github.run(move |batch| tokio::task::block_in_place(|| store.apply(&batch, true).map(|_| ()))));
@@ -141,6 +145,52 @@ pub fn start(app: Arc<App>) {
             tracing::warn!("loading 7d: {e:#}");
         }
     });
+}
+
+/// Collects this machine's transcripts into the store, then again whenever they change:
+/// once writes go quiet for a second, or five seconds into a steady stream.
+fn collect(app: &App) {
+    let sources = crate::collect::Sources { device_id: app.local().id.clone(), ..Default::default() };
+    let mut collector = match crate::collect::Collector::open(sources, &app.config.state_dir.join("collect.db")) {
+        Ok(c) => c,
+        Err(e) => return tracing::error!("collector: {e:#}"),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let Ok(mut watcher) = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        if event.is_ok_and(|e| !matches!(e.kind, notify::EventKind::Access(_))) {
+            let _ = tx.send(());
+        }
+    }) else {
+        return;
+    };
+    for root in collector.roots() {
+        if let Err(e) = watcher.watch(&root, RecursiveMode::Recursive) {
+            tracing::debug!("watching {}: {e}", root.display());
+        }
+    }
+    loop {
+        let policy = app.pricing.policy();
+        let device = app.local().clone();
+        let result = collector.collect(&policy, |c| {
+            for warning in &c.warnings {
+                tracing::warn!("collector: {warning}");
+            }
+            app.store.apply(&Batch { device, events: c.events, deleted_ids: c.retracted_ids }, false).map(|_| ())
+        });
+        if let Err(e) = result {
+            tracing::warn!("collecting: {e:#}");
+        }
+        if rx.recv().is_err() {
+            return;
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while let Ok(()) = rx.recv_timeout(Duration::from_secs(1).min(deadline.saturating_duration_since(std::time::Instant::now()))) {
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+        }
+        while rx.try_recv().is_ok() {}
+    }
 }
 
 /// Calls `changed` once things go quiet for `wait` after a burst of changes under

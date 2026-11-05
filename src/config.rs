@@ -29,9 +29,11 @@ pub struct Config {
     pub agent_sdk_entrypoints: Vec<String>,
     pub hex: PathBuf,
     pub claude: PathBuf,
-    /// While the Go proxy still keeps usage: its usage folder, whose journals are followed
-    /// read-only instead of collecting here.
+    /// The Go proxy's usage folder, whose journals are followed read-only: its history
+    /// loads once into an empty store, and anything it still writes follows.
     pub go_usage_dir: Option<PathBuf>,
+    /// Collect this machine's transcripts here (off while the Go proxy still collects them).
+    pub collect: bool,
     /// Per-request receipts a proxy appends, one record per line.
     pub receipts: Option<PathBuf>,
     /// Repositories whose GitHub Actions upload claude-usage artifacts (autofork's capture step).
@@ -67,6 +69,7 @@ impl Default for Config {
             hex: home.join("hex"),
             claude: home.join(".claude"),
             go_usage_dir: None,
+            collect: true,
             receipts: None,
             github_repos: Vec::new(),
         }
