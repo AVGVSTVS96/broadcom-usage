@@ -14,7 +14,7 @@ use crate::config::Config;
 use crate::store::{Store, now_millis};
 use crate::stream::Stream;
 use crate::views::{
-    self, AppendLog, Binding, CreditsView, Labels, LimitInputs, LimitReading, Live, Names, Past, PlanPricing,
+    self, AppendLog, Row, Binding, CreditsView, Labels, LimitInputs, LimitReading, Live, Names, Past, PlanPricing,
     Processes, Range, SessionUsage, UsageView,
 };
 
@@ -31,6 +31,72 @@ struct RangeCache {
     at: Option<Instant>,
     viewed: Option<Instant>,
     views: HashMap<String, Arc<UsageView>>,
+}
+
+/// The resolved rows in time order, kept current from the store's revisions: a change
+/// costs reading the rows it touched, not the history.
+#[derive(Default)]
+struct Rows {
+    rows: Vec<Row>,
+    ids: Vec<i64>,
+    at: HashMap<i64, usize>,
+    rev: Option<i64>,
+}
+
+impl Rows {
+    fn sync(&mut self, store: &Store) -> Result<()> {
+        let (changes, latest) = store.rows_after(self.rev.unwrap_or(-1))?;
+        let first = self.rev.is_none();
+        self.rev = Some(latest);
+        let mut dropped = vec![false; self.rows.len()];
+        let mut added = Vec::new();
+        for (id, visible, row) in changes {
+            match self.at.get(&id) {
+                Some(&i) if visible && self.rows[i].millis == row.millis => self.rows[i] = row,
+                Some(&i) => {
+                    dropped[i] = true;
+                    if visible {
+                        added.push((id, row));
+                    }
+                }
+                None if visible => added.push((id, row)),
+                None => {}
+            }
+        }
+        if !first {
+            added.sort_by(|a, b| a.1.millis.total_cmp(&b.1.millis));
+        }
+        let tail = self.rows.last().map_or(f64::NEG_INFINITY, |r| r.millis);
+        if first || (!dropped.contains(&true) && added.first().is_none_or(|(_, r)| r.millis >= tail)) {
+            for (id, row) in added {
+                self.at.insert(id, self.rows.len());
+                self.ids.push(id);
+                self.rows.push(row);
+            }
+            return Ok(());
+        }
+        let old = std::mem::take(&mut self.rows).into_iter().zip(std::mem::take(&mut self.ids)).zip(dropped);
+        let mut old = old.filter(|(_, gone)| !gone).map(|(kept, _)| kept).peekable();
+        let mut added = added.into_iter().map(|(id, row)| (row, id)).peekable();
+        loop {
+            let take_old = match (old.peek(), added.peek()) {
+                (Some(o), Some(a)) => o.0.millis <= a.0.millis,
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+                (None, None) => break,
+            };
+            let (row, id) = if take_old { old.next() } else { added.next() }.expect("peeked");
+            self.rows.push(row);
+            self.ids.push(id);
+        }
+        self.at = self.ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+        Ok(())
+    }
+
+    /// The rows from `since` (unix ms) on.
+    fn since(&self, since: f64) -> &[Row] {
+        &self.rows[self.rows.partition_point(|r| r.millis < since)..]
+    }
 }
 
 #[derive(Default)]
@@ -50,6 +116,7 @@ pub struct Deck {
     store: Arc<Store>,
     pub stream: Stream,
     state: Mutex<State>,
+    rows: Mutex<Rows>,
     readings: Mutex<AppendLog<LimitReading>>,
     bindings: Mutex<AppendLog<Binding>>,
     loader: tokio::sync::Mutex<()>,
@@ -85,6 +152,7 @@ impl Deck {
             store,
             stream: Stream::default(),
             state: Mutex::new(State { ranges, ..Default::default() }),
+            rows: Mutex::default(),
             readings: Mutex::new(readings),
             bindings: Mutex::new(bindings),
             loader: tokio::sync::Mutex::new(()),
@@ -109,8 +177,9 @@ impl Deck {
             .iter()
             .map(|&r| views::reads_from(r, self.zone, now, &readings).min(views::pricing_from(r, self.zone, now)))
             .fold(f64::INFINITY, f64::min);
-        let rows = self.store.rows_since(if from.is_finite() { from as i64 } else { 0 })?;
-        let prepared = views::prepare(&rows);
+        let mut rows = self.rows.lock().unwrap();
+        rows.sync(&self.store)?;
+        let prepared = views::prepare(rows.since(from));
         let plans = views::read_plans(Some(&self.config.accounts_file), Some(&self.config.pool_dir), &self.config.plans);
         let pricing = PlanPricing::new(&plans, &prepared, self.zone, now);
         let limits = LimitInputs::new(&readings, &bindings, self.config.agent_sdk());

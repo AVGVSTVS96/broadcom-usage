@@ -71,10 +71,11 @@ CREATE TABLE IF NOT EXISTS events (
   response_key TEXT,
   request_key TEXT,
   hidden INTEGER NOT NULL DEFAULT 0,
+  gone INTEGER NOT NULL DEFAULT 0,
+  rev INTEGER NOT NULL,
   PRIMARY KEY (harness, id)
 );
-CREATE INDEX IF NOT EXISTS events_order ON events (ts, id) WHERE hidden = 0;
-DROP INDEX IF EXISTS events_time;
+CREATE INDEX IF NOT EXISTS events_rev ON events (rev);
 CREATE INDEX IF NOT EXISTS events_session ON events (harness, session_id, ts);
 CREATE INDEX IF NOT EXISTS events_response ON events (harness, response_key) WHERE response_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS events_request ON events (harness, request_key, model) WHERE request_key IS NOT NULL;
@@ -87,9 +88,13 @@ CREATE INDEX IF NOT EXISTS events_proxy ON events (account_id, millis) WHERE sou
 ";
 
 /// Whether a transcript row's upstream response or request has a proxy receipt.
-const HAS_RECEIPT: &str = "(EXISTS (SELECT 1 FROM events p WHERE p.source = 'proxy' AND p.harness = events.harness \
-    AND p.response_key = events.response_key) OR EXISTS (SELECT 1 FROM events p WHERE p.source = 'proxy' \
-    AND p.harness = events.harness AND p.request_key = events.request_key AND p.model = events.model))";
+const HAS_RECEIPT: &str = "(EXISTS (SELECT 1 FROM events p WHERE p.source = 'proxy' AND p.gone = 0 \
+    AND p.harness = events.harness AND p.response_key = events.response_key) OR EXISTS (SELECT 1 FROM events p \
+    WHERE p.source = 'proxy' AND p.gone = 0 AND p.harness = events.harness AND p.request_key = events.request_key \
+    AND p.model = events.model))";
+
+/// A row the views count.
+const VISIBLE: &str = "hidden = 0 AND gone = 0";
 
 const COLUMNS: &str = "source, response_id, upstream_request_id, account_id, failed, id, ts, harness, model, raw_model, \
     project, repository, session_id, input, output, cache_read, cache_write, unclassified, reasoning, cost_usd, \
@@ -191,7 +196,7 @@ impl Store {
                 }
             }
         }
-        Resolver::new(&tx, &self.local.id, &policy).resolve(&touched)?;
+        Resolver::new(&tx, &self.local.id, &policy)?.resolve(&touched)?;
         tx.commit()?;
         if !touched.is_empty() || created {
             self.changed();
@@ -251,7 +256,7 @@ impl Store {
         let mut db = self.write.lock().unwrap();
         let tx = db.transaction()?;
         tx.execute("DELETE FROM events", [])?;
-        let resolver = Resolver::new(&tx, &self.local.id, &policy);
+        let resolver = Resolver::new(&tx, &self.local.id, &policy)?;
         let mut winners = tx.prepare(
             "SELECT event FROM (SELECT event, row_number() OVER (PARTITION BY harness, id \
              ORDER BY total DESC, device = ?1 DESC, device ASC) AS rank FROM records) WHERE rank = 1",
@@ -283,18 +288,20 @@ impl Store {
         *self.policy.lock().unwrap() = policy.clone();
         let mut db = self.write.lock().unwrap();
         let tx = db.transaction()?;
+        let rev = next_rev(&tx)?;
         let rows: Vec<Event> = tx
-            .prepare(&format!("SELECT {COLUMNS} FROM events"))?
+            .prepare(&format!("SELECT {COLUMNS} FROM events WHERE gone = 0"))?
             .query_map([], read_event)?
             .collect::<rusqlite::Result<_>>()?;
         let mut changed = 0;
         {
             let mut update = tx.prepare(
-                "UPDATE events SET model = ?3, raw_model = ?4, cost_usd = ?5, cost_known = ?6 WHERE harness = ?1 AND id = ?2",
+                "UPDATE events SET model = ?3, raw_model = ?4, cost_usd = ?5, cost_known = ?6, rev = ?7 \
+                 WHERE harness = ?1 AND id = ?2",
             )?;
             for e in rows {
                 if let Some(p) = policy.reprice(&e) {
-                    update.execute(params![p.harness, p.id, p.model, p.raw_model, p.cost_usd, p.cost_known])?;
+                    update.execute(params![p.harness, p.id, p.model, p.raw_model, p.cost_usd, p.cost_known, rev])?;
                     changed += 1;
                 }
             }
@@ -306,11 +313,14 @@ impl Store {
         Ok(changed)
     }
 
-    /// Resolved records from `since` (unix ms) on, in timestamp and id order, as the views read them.
-    pub fn rows_since(&self, since: i64) -> Result<Vec<crate::views::Row>> {
+    /// Rows changed since `rev` (all of them for -1) in timestamp and id order, each with
+    /// its rowid and whether the views count it, and the store's latest revision.
+    pub fn rows_after(&self, rev: i64) -> Result<(Vec<(i64, bool, crate::views::Row)>, i64)> {
         let db = self.read.lock().unwrap();
+        let tx = db.unchecked_transaction()?;
+        let latest: i64 = tx.query_row("SELECT coalesce(max(rev), 0) FROM events", [], |r| r.get(0))?;
         let mut strings: HashMap<String, Arc<str>> = HashMap::new();
-        let mut intern = |r: &rusqlite::Row, i: usize| -> rusqlite::Result<Arc<str>> {
+        let mut intern = |r: &Row, i: usize| -> rusqlite::Result<Arc<str>> {
             let text = r.get_ref(i)?.as_str()?;
             Ok(match strings.get(text) {
                 Some(s) => s.clone(),
@@ -321,58 +331,54 @@ impl Store {
                 }
             })
         };
-        let mut statement = db.prepare_cached(
-            "SELECT millis, source = 'proxy', failed, cost_known, cost_usd, harness, model, project, repository, session_id, \
-             device_id, session_title, entrypoint, account_id, input, output, cache_read, cache_write, unclassified, \
-             reasoning, requests FROM events WHERE hidden = 0 AND millis >= ?1 ORDER BY ts, id",
-        )?;
-        let mut rows = statement.query([since])?;
+        let mut statement = tx.prepare_cached(&format!(
+            "SELECT rowid, {VISIBLE} AND millis IS NOT NULL, coalesce(millis, 0), source = 'proxy', failed, cost_known, \
+             cost_usd, harness, model, project, repository, session_id, device_id, session_title, entrypoint, account_id, \
+             input, output, cache_read, cache_write, unclassified, reasoning, requests \
+             FROM events WHERE rev > ?1 AND rev <= ?2 ORDER BY ts, id"
+        ))?;
+        let mut rows = statement.query([rev, latest])?;
         let mut out = Vec::new();
         while let Some(r) = rows.next()? {
-            out.push(crate::views::Row {
-                millis: r.get::<_, i64>(0)? as f64,
-                proxy: r.get(1)?,
-                failed: r.get(2)?,
-                cost_known: r.get(3)?,
-                cost_usd: r.get(4)?,
-                harness: intern(r, 5)?,
-                model: intern(r, 6)?,
-                project: intern(r, 7)?,
-                repository: match r.get_ref(8)? {
-                    rusqlite::types::ValueRef::Null => None,
-                    _ => Some(intern(r, 8)?),
+            out.push((
+                r.get(0)?,
+                r.get(1)?,
+                crate::views::Row {
+                    millis: r.get::<_, i64>(2)? as f64,
+                    proxy: r.get(3)?,
+                    failed: r.get(4)?,
+                    cost_known: r.get(5)?,
+                    cost_usd: r.get(6)?,
+                    harness: intern(r, 7)?,
+                    model: intern(r, 8)?,
+                    project: intern(r, 9)?,
+                    repository: match r.get_ref(10)? {
+                        rusqlite::types::ValueRef::Null => None,
+                        _ => Some(intern(r, 10)?),
+                    },
+                    session_id: intern(r, 11)?,
+                    device_id: intern(r, 12)?,
+                    session_title: intern(r, 13)?,
+                    entrypoint: intern(r, 14)?,
+                    account_id: intern(r, 15)?,
+                    input_tokens: r.get(16)?,
+                    output_tokens: r.get(17)?,
+                    cache_read_tokens: r.get(18)?,
+                    cache_write_tokens: r.get(19)?,
+                    unclassified_tokens: r.get(20)?,
+                    reasoning_tokens: r.get(21)?,
+                    requests: r.get(22)?,
                 },
-                session_id: intern(r, 9)?,
-                device_id: intern(r, 10)?,
-                session_title: intern(r, 11)?,
-                entrypoint: intern(r, 12)?,
-                account_id: intern(r, 13)?,
-                input_tokens: r.get(14)?,
-                output_tokens: r.get(15)?,
-                cache_read_tokens: r.get(16)?,
-                cache_write_tokens: r.get(17)?,
-                unclassified_tokens: r.get(18)?,
-                reasoning_tokens: r.get(19)?,
-                requests: r.get(20)?,
-            });
+            ));
         }
-        Ok(out)
-    }
-
-    /// Resolved records from `since` (unix ms) on, sorted by timestamp and id.
-    pub fn events_since(&self, since: i64) -> Result<Vec<Event>> {
-        let db = self.read.lock().unwrap();
-        Ok(db
-            .prepare_cached(&format!("SELECT {COLUMNS} FROM events WHERE hidden = 0 AND millis >= ?1 ORDER BY ts, id"))?
-            .query_map([since], read_event)?
-            .collect::<rusqlite::Result<_>>()?)
+        Ok((out, latest))
     }
 
     /// Every resolved record, sorted, as Go's `Store.Events()` returns them.
     pub fn events(&self) -> Result<Vec<Event>> {
         let db = self.read.lock().unwrap();
         let mut events: Vec<Event> = db
-            .prepare(&format!("SELECT {COLUMNS} FROM events WHERE hidden = 0"))?
+            .prepare(&format!("SELECT {COLUMNS} FROM events WHERE {VISIBLE}"))?
             .query_map([], read_event)?
             .collect::<rusqlite::Result<_>>()?;
         events.sort_unstable_by(|a, b| a.timestamp.cmp(&b.timestamp).then_with(|| a.id.cmp(&b.id)));
@@ -383,7 +389,7 @@ impl Store {
     pub fn receipts(&self, credentials: &[String]) -> Result<Vec<Event>> {
         let db = self.read.lock().unwrap();
         let mut statement =
-            db.prepare_cached(&format!("SELECT {COLUMNS} FROM events WHERE source = 'proxy' AND account_id = ?1"))?;
+            db.prepare_cached(&format!("SELECT {COLUMNS} FROM events WHERE source = 'proxy' AND gone = 0 AND account_id = ?1"))?;
         let mut out = Vec::new();
         for credential in credentials {
             out.extend(statement.query_map([credential], read_event)?.collect::<rusqlite::Result<Vec<_>>>()?);
@@ -395,7 +401,7 @@ impl Store {
     pub fn proxy_since(&self) -> Result<Option<i64>> {
         let db = self.read.lock().unwrap();
         Ok(db
-            .prepare_cached("SELECT min(millis) FROM events WHERE source = 'proxy' AND hidden = 0")?
+            .prepare_cached("SELECT min(millis) FROM events WHERE source = 'proxy' AND gone = 0")?
             .query_row([], |r| r.get(0))?)
     }
 
@@ -530,15 +536,21 @@ fn with_transcript(mut wire: Event, transcript: &Event) -> Event {
 
 type Identity = (String, String, Option<String>);
 
+/// The revision this transaction's changes carry.
+fn next_rev(tx: &Transaction) -> Result<i64> {
+    Ok(tx.query_row("SELECT coalesce(max(rev), 0) + 1 FROM events", [], |r| r.get(0))?)
+}
+
 struct Resolver<'a> {
     tx: &'a Transaction<'a>,
     local: &'a str,
     policy: &'a Policy,
+    rev: i64,
 }
 
 impl<'a> Resolver<'a> {
-    fn new(tx: &'a Transaction<'a>, local: &'a str, policy: &'a Policy) -> Self {
-        Self { tx, local, policy }
+    fn new(tx: &'a Transaction<'a>, local: &'a str, policy: &'a Policy) -> Result<Self> {
+        Ok(Self { tx, local, policy, rev: next_rev(tx)? })
     }
 
     fn resolve(&self, keys: &BTreeSet<(String, String)>) -> Result<()> {
@@ -558,13 +570,19 @@ impl<'a> Resolver<'a> {
             if let Some(old) = self.resolved(harness, id)? {
                 note(&old);
             }
-            self.tx.execute("DELETE FROM events WHERE harness = ?1 AND id = ?2", params![harness, id])?;
-            if let Some(winner) = self.winner(harness, id)? {
-                note(&winner);
-                if winner.is_proxy() {
-                    proxies.insert((harness.clone(), id.clone()));
+            match self.winner(harness, id)? {
+                Some(winner) => {
+                    note(&winner);
+                    if winner.is_proxy() {
+                        proxies.insert((harness.clone(), id.clone()));
+                    }
+                    self.write(&winner)?;
                 }
-                self.write(&winner)?;
+                None => {
+                    self.tx
+                        .prepare_cached("UPDATE events SET gone = 1, rev = ?3 WHERE harness = ?1 AND id = ?2 AND gone = 0")?
+                        .execute(params![harness, id, self.rev])?;
+                }
             }
         }
         for (harness, key, model) in &identities {
@@ -574,17 +592,21 @@ impl<'a> Resolver<'a> {
                 None => vec![harness, key],
             };
             self.tx
-                .prepare_cached(&format!("UPDATE events SET hidden = {HAS_RECEIPT} WHERE source <> 'proxy' AND harness = ?1 AND {column} = ?2{model_clause}"))?
+                .prepare_cached(&format!(
+                    "UPDATE events SET hidden = 1 - hidden, rev = {} WHERE source <> 'proxy' AND harness = ?1 \
+                     AND {column} = ?2{model_clause} AND hidden <> {HAS_RECEIPT}",
+                    self.rev
+                ))?
                 .execute(args.as_slice())?;
             self.collect(
-                &format!("SELECT harness, id FROM events WHERE source = 'proxy' AND harness = ?1 AND {column} = ?2{model_clause}"),
+                &format!("SELECT harness, id FROM events WHERE source = 'proxy' AND gone = 0 AND harness = ?1 AND {column} = ?2{model_clause}"),
                 args.as_slice(),
                 &mut proxies,
             )?;
         }
         for (harness, session) in &sessions {
             self.collect(
-                "SELECT harness, id FROM events WHERE source = 'proxy' AND harness = ?1 AND session_id = ?2",
+                "SELECT harness, id FROM events WHERE source = 'proxy' AND gone = 0 AND harness = ?1 AND session_id = ?2",
                 params![harness, session],
                 &mut proxies,
             )?;
@@ -607,7 +629,7 @@ impl<'a> Resolver<'a> {
     fn resolved(&self, harness: &str, id: &str) -> Result<Option<Event>> {
         Ok(self
             .tx
-            .prepare_cached(&format!("SELECT {COLUMNS} FROM events WHERE harness = ?1 AND id = ?2"))?
+            .prepare_cached(&format!("SELECT {COLUMNS} FROM events WHERE harness = ?1 AND id = ?2 AND gone = 0"))?
             .query_row(params![harness, id], read_event)
             .optional()?)
     }
@@ -632,7 +654,9 @@ impl<'a> Resolver<'a> {
         self.insert(e)?;
         if !e.is_proxy() {
             self.tx
-                .prepare_cached(&format!("UPDATE events SET hidden = {HAS_RECEIPT} WHERE harness = ?1 AND id = ?2"))?
+                .prepare_cached(&format!(
+                    "UPDATE events SET hidden = 1 - hidden WHERE harness = ?1 AND id = ?2 AND hidden <> {HAS_RECEIPT}"
+                ))?
                 .execute(params![e.harness, e.id])?;
         }
         Ok(())
@@ -641,15 +665,18 @@ impl<'a> Resolver<'a> {
     fn insert(&self, e: &Event) -> Result<()> {
         let priced = self.policy.reprice(e).unwrap_or_else(|| e.clone());
         self.tx.prepare_cached(&format!(
-            "INSERT OR REPLACE INTO events ({COLUMNS}, millis, response_key, request_key, hidden) VALUES \
+            "INSERT INTO events ({COLUMNS}, millis, response_key, request_key, hidden, gone, rev) VALUES \
              (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, \
-              ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35)"
+              ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, 0, 0, ?35) ON CONFLICT (harness, id) DO UPDATE SET {}, \
+              millis = excluded.millis, response_key = excluded.response_key, request_key = excluded.request_key, \
+              hidden = 0, gone = 0, rev = excluded.rev",
+            COLUMNS.split(", ").map(|c| format!("{c} = excluded.{c}")).collect::<Vec<_>>().join(", ")
         ))?
         .execute(rusqlite::params_from_iter(event_values(&priced).into_iter().chain([
             millis_of(&priced.timestamp).map_or(rusqlite::types::Value::Null, rusqlite::types::Value::Integer),
             opt(response_identity(e)),
             opt(request_identity(e)),
-            rusqlite::types::Value::Integer(0),
+            rusqlite::types::Value::Integer(self.rev),
         ])))?;
         Ok(())
     }
@@ -664,7 +691,8 @@ impl<'a> Resolver<'a> {
         let matched = match response_identity(&wire) {
             Some(r) => transcript(
                 &format!(
-                    "SELECT {COLUMNS} FROM events WHERE source <> 'proxy' AND harness = ?1 AND response_key = ?2 ORDER BY ts DESC LIMIT 1"
+                    "SELECT {COLUMNS} FROM events WHERE source <> 'proxy' AND gone = 0 AND harness = ?1 AND response_key = ?2 \
+                     ORDER BY ts DESC LIMIT 1"
                 ),
                 &[&harness, &r],
             )?,
@@ -673,7 +701,7 @@ impl<'a> Resolver<'a> {
         let matched = match (matched, request_identity(&wire)) {
             (None, Some(r)) => transcript(
                 &format!(
-                    "SELECT {COLUMNS} FROM events WHERE source <> 'proxy' AND harness = ?1 AND request_key = ?2 AND model = ?3 \
+                    "SELECT {COLUMNS} FROM events WHERE source <> 'proxy' AND gone = 0 AND harness = ?1 AND request_key = ?2 AND model = ?3 \
                      ORDER BY ts DESC LIMIT 1"
                 ),
                 &[&harness, &r, &wire.model],
@@ -685,7 +713,7 @@ impl<'a> Resolver<'a> {
         }
         let latest = transcript(
             &format!(
-                "SELECT {COLUMNS} FROM events WHERE source <> 'proxy' AND harness = ?1 AND session_id = ?2 \
+                "SELECT {COLUMNS} FROM events WHERE source <> 'proxy' AND gone = 0 AND harness = ?1 AND session_id = ?2 \
                  ORDER BY ts DESC, device_id = ?3 ASC, device_id ASC LIMIT 1"
             ),
             &[&harness, &resolved.session_id, &self.local],
@@ -694,13 +722,17 @@ impl<'a> Resolver<'a> {
             resolved = with_transcript(resolved, t);
         }
         let priced = self.policy.reprice(&resolved).unwrap_or(resolved);
+        if self.resolved(harness, id)?.as_ref() == Some(&priced) {
+            return Ok(());
+        }
         let mut values = event_values(&priced);
         values.push(rusqlite::types::Value::Text(harness.to_string()));
         values.push(rusqlite::types::Value::Text(id.to_string()));
+        values.push(rusqlite::types::Value::Integer(self.rev));
         let assignments: Vec<String> =
             COLUMNS.split(", ").enumerate().map(|(i, c)| format!("{c} = ?{}", i + 1)).collect();
         self.tx
-            .prepare_cached(&format!("UPDATE events SET {} WHERE harness = ?32 AND id = ?33", assignments.join(", ")))?
+            .prepare_cached(&format!("UPDATE events SET {}, rev = ?34 WHERE harness = ?32 AND id = ?33", assignments.join(", ")))?
             .execute(rusqlite::params_from_iter(values))?;
         Ok(())
     }
