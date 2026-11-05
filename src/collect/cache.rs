@@ -3,20 +3,37 @@
 //! missing or outdated file is rebuilt by one full pass.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::{Read, Write};
 use std::path::Path;
 
 use anyhow::Result;
+use flate2::Compression;
+use flate2::read::DeflateDecoder;
+use flate2::write::DeflateEncoder;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use super::parse::Parsed;
 use super::t3::Metadata;
 
-const VERSION: i64 = 1;
+const VERSION: i64 = 3;
 
-pub const ID: i64 = 0;
-pub const SESSION: i64 = 1;
+/// A record id or session that ties files together, as a 64-bit FNV-1a hash. A collision
+/// only widens a pass to more files, which resends unchanged records.
+pub type Link = i64;
 
-pub type Link = (i64, String);
+fn link(kind: u8, value: &str) -> Link {
+    let hash = [kind]
+        .iter()
+        .chain(value.as_bytes())
+        .fold(0xcbf29ce484222325u64, |h, &b| {
+            (h ^ u64::from(b)).wrapping_mul(0x100000001b3)
+        });
+    hash as i64
+}
+
+pub fn session_link(session: &str) -> Link {
+    link(1, session)
+}
 
 /// Where an appended Claude log picks up: complete lines read, the bytes they span, and
 /// the bytes just before that point, which must still be there.
@@ -40,26 +57,26 @@ pub fn open(path: &Path) -> Result<Connection> {
     let db = Connection::open(path)?;
     db.pragma_update(None, "journal_mode", "WAL")?;
     db.pragma_update(None, "synchronous", "NORMAL")?;
+    db.pragma_update(None, "cache_size", -32768)?;
     let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
     if version != VERSION {
         db.execute_batch(
-            "DROP TABLE IF EXISTS files; DROP TABLE IF EXISTS links; DROP TABLE IF EXISTS t3;
+            "DROP TABLE IF EXISTS files; DROP TABLE IF EXISTS parsed; DROP TABLE IF EXISTS links; DROP TABLE IF EXISTS t3;
              CREATE TABLE files (
                  id INTEGER PRIMARY KEY,
                  key TEXT NOT NULL UNIQUE,
                  signature TEXT NOT NULL,
-                 parsed BLOB NOT NULL,
                  lines INTEGER,
                  end INTEGER,
                  tail BLOB
              );
+             CREATE TABLE parsed (file INTEGER PRIMARY KEY, blob BLOB NOT NULL);
              CREATE TABLE links (
-                 kind INTEGER NOT NULL,
-                 link TEXT NOT NULL,
+                 link INTEGER NOT NULL,
                  file INTEGER NOT NULL,
-                 PRIMARY KEY (kind, link, file)
+                 PRIMARY KEY (link, file)
              ) WITHOUT ROWID;
-             CREATE INDEX links_file ON links (file, kind, link);
+             CREATE INDEX links_file ON links (file, link);
              CREATE TABLE t3 (key TEXT PRIMARY KEY, metadata TEXT NOT NULL);",
         )?;
         db.pragma_update(None, "user_version", VERSION)?;
@@ -96,33 +113,55 @@ pub fn files(db: &Connection) -> Result<HashMap<String, Cached>> {
 
 pub fn parsed(db: &Connection, id: i64) -> Result<Parsed> {
     let blob: Vec<u8> =
-        db.query_row("SELECT parsed FROM files WHERE id = ?", [id], |r| r.get(0))?;
-    Ok(serde_json::from_slice(&blob)?)
+        db.query_row("SELECT blob FROM parsed WHERE file = ?", [id], |r| r.get(0))?;
+    let mut json = Vec::new();
+    DeflateDecoder::new(&blob[..]).read_to_end(&mut json)?;
+    Ok(serde_json::from_slice(&json)?)
 }
 
 pub fn links_of(tx: &Transaction, file: i64) -> Result<Vec<Link>> {
-    let mut statement = tx.prepare_cached("SELECT kind, link FROM links WHERE file = ?")?;
-    let rows = statement.query_map([file], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    let mut statement = tx.prepare_cached("SELECT link FROM links WHERE file = ?")?;
+    let rows = statement.query_map([file], |r| r.get(0))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-pub fn files_linked(tx: &Transaction, (kind, link): &Link) -> Result<Vec<i64>> {
-    let mut statement = tx.prepare_cached("SELECT file FROM links WHERE kind = ? AND link = ?")?;
-    let rows = statement.query_map(params![kind, link], |r| r.get(0))?;
+pub fn files_linked(tx: &Transaction, link: Link) -> Result<Vec<i64>> {
+    let mut statement = tx.prepare_cached("SELECT file FROM links WHERE link = ?")?;
+    let rows = statement.query_map([link], |r| r.get(0))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 pub fn links(parsed: &Parsed) -> HashSet<Link> {
-    let mut out = HashSet::new();
-    let mut ids = Vec::new();
-    let mut sessions = Vec::new();
+    let mut ids = HashSet::new();
+    let mut sessions = HashSet::new();
     parsed.links(
-        |id| ids.push(id.to_string()),
-        |s| sessions.push(s.to_string()),
+        |id| _ = ids.insert(link(0, id)),
+        |s| _ = sessions.insert(session_link(s)),
     );
-    out.extend(ids.into_iter().map(|l| (ID, l)));
-    out.extend(sessions.into_iter().map(|l| (SESSION, l)));
-    out
+    ids.extend(sessions);
+    ids
+}
+
+/// A freshly parsed file, encoded for the cache.
+pub struct Entry {
+    pub parsed: Parsed,
+    pub resume: Option<Resume>,
+    pub links: HashSet<Link>,
+    blob: Vec<u8>,
+}
+
+impl Entry {
+    pub fn new(parsed: Parsed, resume: Option<Resume>) -> Result<Entry> {
+        let mut encoder = DeflateEncoder::new(Vec::new(), Compression::fast());
+        encoder.write_all(&serde_json::to_vec(&parsed)?)?;
+        let blob = encoder.finish()?;
+        Ok(Entry {
+            links: links(&parsed),
+            parsed,
+            resume,
+            blob,
+        })
+    }
 }
 
 /// Replaces a file's row and links, returning its id and the links it had before.
@@ -130,9 +169,7 @@ pub fn put(
     tx: &Transaction,
     key: &str,
     signature: &str,
-    parsed: &Parsed,
-    resume: Option<&Resume>,
-    links: &HashSet<Link>,
+    entry: &Entry,
 ) -> Result<(i64, Vec<Link>)> {
     let existing: Option<i64> = tx
         .query_row("SELECT id FROM files WHERE key = ?", [key], |r| r.get(0))
@@ -146,22 +183,24 @@ pub fn put(
         None => Vec::new(),
     };
     tx.execute(
-        "INSERT INTO files (key, signature, parsed, lines, end, tail) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-         ON CONFLICT (key) DO UPDATE SET signature = ?2, parsed = ?3, lines = ?4, end = ?5, tail = ?6",
+        "INSERT INTO files (key, signature, lines, end, tail) VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT (key) DO UPDATE SET signature = ?2, lines = ?3, end = ?4, tail = ?5",
         params![
             key,
             signature,
-            serde_json::to_vec(parsed)?,
-            resume.map(|r| r.lines as i64),
-            resume.map(|r| r.end as i64),
-            resume.map(|r| &r.tail),
+            entry.resume.as_ref().map(|r| r.lines as i64),
+            entry.resume.as_ref().map(|r| r.end as i64),
+            entry.resume.as_ref().map(|r| &r.tail),
         ],
     )?;
     let id = tx.query_row("SELECT id FROM files WHERE key = ?", [key], |r| r.get(0))?;
-    let mut insert =
-        tx.prepare_cached("INSERT OR IGNORE INTO links (kind, link, file) VALUES (?, ?, ?)")?;
-    for (kind, link) in links {
-        insert.execute(params![kind, link, id])?;
+    tx.execute(
+        "INSERT OR REPLACE INTO parsed (file, blob) VALUES (?, ?)",
+        params![id, entry.blob],
+    )?;
+    let mut insert = tx.prepare_cached("INSERT OR IGNORE INTO links (link, file) VALUES (?, ?)")?;
+    for link in &entry.links {
+        insert.execute(params![link, id])?;
     }
     Ok((id, old))
 }
@@ -170,6 +209,7 @@ pub fn put(
 pub fn remove(tx: &Transaction, id: i64) -> Result<Vec<Link>> {
     let old = links_of(tx, id)?;
     tx.execute("DELETE FROM links WHERE file = ?", [id])?;
+    tx.execute("DELETE FROM parsed WHERE file = ?", [id])?;
     tx.execute("DELETE FROM files WHERE id = ?", [id])?;
     Ok(old)
 }

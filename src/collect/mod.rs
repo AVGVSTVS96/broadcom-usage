@@ -27,7 +27,7 @@ use rusqlite::Connection;
 use crate::event::Event;
 use crate::pricing::Policy;
 use cache::{Link, Resume};
-use parse::{Claude, Parsed};
+use parse::{Claude, Harness, Parsed, Usage};
 
 /// Where a machine's agent logs live. Empty fields use the same defaults and environment
 /// variables (CLAUDE_CONFIG_DIR, CODEX_HOME, PI_CODING_AGENT_DIR, GROK_HOME, MUSE_HOME)
@@ -224,24 +224,23 @@ impl Collector {
         let tx = self.db.transaction()?;
         let mut seeds: HashSet<Link> = HashSet::new();
         let mut ids: HashMap<String, i64> = cached.iter().map(|(k, c)| (k.clone(), c.id)).collect();
-        for (&i, (parsed, resume)) in &fresh {
-            let links = cache::links(parsed);
-            let (id, old) = cache::put(
-                &tx,
-                &logs[i].key,
-                &logs[i].signature,
-                parsed,
-                resume.as_ref(),
-                &links,
-            )?;
+        for (&i, entry) in &fresh {
+            let (id, old) = cache::put(&tx, &logs[i].key, &logs[i].signature, entry)?;
             ids.insert(logs[i].key.clone(), id);
-            seeds.extend(old);
-            seeds.extend(links);
+            if !cold {
+                seeds.extend(old);
+                seeds.extend(entry.links.iter().cloned());
+            }
         }
         let present: HashSet<&str> = logs
             .iter()
             .enumerate()
-            .filter(|(i, _)| !stale.contains(i) || fresh.contains_key(i))
+            .filter(|(i, l)| {
+                fresh.contains_key(i)
+                    || cached
+                        .get(&l.key)
+                        .is_some_and(|c| c.signature == l.signature)
+            })
             .map(|(_, l)| l.key.as_str())
             .collect();
         for (key, c) in &cached {
@@ -266,7 +265,7 @@ impl Collector {
         let t3_now = t3::read(&self.t3_data, &self.t3_url);
         let t3_before = cache::t3(&tx)?;
         for session in cache::put_t3(&tx, &t3_before, &t3_now)? {
-            seeds.insert((cache::SESSION, session));
+            seeds.insert(cache::session_link(&session));
         }
 
         let picked: HashSet<i64> = if cold {
@@ -280,7 +279,7 @@ impl Collector {
                 continue;
             };
             files.push(match fresh.remove(&i) {
-                Some((parsed, _)) => parsed,
+                Some(entry) => entry.parsed,
                 None => cache::parsed(&tx, *id)?,
             });
         }
@@ -451,7 +450,7 @@ fn parse_all(
     stale: &[usize],
     prior: HashMap<usize, (Parsed, Resume)>,
     workers: usize,
-) -> HashMap<usize, (Parsed, Option<Resume>)> {
+) -> HashMap<usize, cache::Entry> {
     let next = AtomicUsize::new(0);
     let prior = Mutex::new(prior);
     let results = Mutex::new(HashMap::with_capacity(stale.len()));
@@ -460,8 +459,9 @@ fn parse_all(
             scope.spawn(|| {
                 while let Some(&i) = stale.get(next.fetch_add(1, Ordering::Relaxed)) {
                     let before = prior.lock().unwrap().remove(&i);
-                    if let Some(parsed) = parse_file(&logs[i], before) {
-                        results.lock().unwrap().insert(i, parsed);
+                    let parsed = parse_file(&logs[i], before);
+                    if let Some(entry) = parsed.and_then(|(p, r)| cache::Entry::new(p, r).ok()) {
+                        results.lock().unwrap().insert(i, entry);
                     }
                 }
             });
@@ -477,10 +477,10 @@ fn affected(tx: &rusqlite::Transaction, seeds: HashSet<Link>) -> Result<HashSet<
     let mut seen: HashSet<Link> = HashSet::new();
     let mut links: Vec<Link> = seeds.into_iter().collect();
     while let Some(link) = links.pop() {
-        if !seen.insert(link.clone()) {
+        if !seen.insert(link) {
             continue;
         }
-        for file in cache::files_linked(tx, &link)? {
+        for file in cache::files_linked(tx, link)? {
             if picked.insert(file) {
                 links.extend(
                     cache::links_of(tx, file)?
@@ -493,6 +493,28 @@ fn affected(tx: &rusqlite::Transaction, seeds: HashSet<Link>) -> Result<HashSet<
     Ok(picked)
 }
 
+fn event(u: &Usage) -> Event {
+    Event {
+        id: u.id.clone(),
+        timestamp: u.timestamp.clone(),
+        harness: u.harness.as_str().into(),
+        model: u.model.clone(),
+        project: u.project.clone(),
+        session_id: u.session_id.clone(),
+        entrypoint: u.entrypoint.clone(),
+        input_tokens: u.input_tokens,
+        output_tokens: u.output_tokens,
+        cache_read_tokens: u.cache_read_tokens,
+        cache_write_tokens: u.cache_write_tokens,
+        reasoning_tokens: u.reasoning_tokens,
+        cost_usd: u.reported_cost_usd.unwrap_or_default(),
+        cost_known: u.reported_cost_usd.is_some(),
+        reported_cost_usd: u.reported_cost_usd,
+        requests: u.requests,
+        ..Default::default()
+    }
+}
+
 /// Deduplicates, attributes and prices one pass's files into its collection.
 fn build(
     mut files: Vec<Parsed>,
@@ -501,39 +523,39 @@ fn build(
     device_id: &str,
 ) -> Collection {
     let mut titles: HashMap<String, String> = HashMap::new();
-    let mut originals: Vec<String> = Vec::new();
-    for file in &files {
+    for file in files.iter().filter(|f| !f.session_title.is_empty()) {
         for entry in &file.events {
-            if !file.session_title.is_empty() {
-                titles.insert(entry.event.session_id.clone(), file.session_title.clone());
-            }
-            originals.push(entry.event.id.clone());
-            if !entry.legacy_event_id.is_empty() {
-                originals.push(entry.legacy_event_id.clone());
-            }
+            titles.insert(entry.usage.session_id.clone(), file.session_title.clone());
         }
     }
     dedup::filter_replays(&mut files);
     let (entries, retained) = dedup::deduplicate(&files);
     let mut retracted: Vec<String> = Vec::new();
     let mut seen = HashSet::new();
-    let views = files.iter().flat_map(|f| f.retracted_ids.iter().cloned());
-    for id in originals.into_iter().chain(views) {
-        if !retained.contains_key(id.as_str()) && seen.insert(id.clone()) {
-            retracted.push(id);
+    for file in &files {
+        let legacy = file
+            .events
+            .iter()
+            .map(|e| &e.legacy_event_id)
+            .filter(|id| !id.is_empty());
+        for id in file.retracted_ids.iter().chain(legacy) {
+            if !retained.contains_key(id.as_str()) && seen.insert(id) {
+                retracted.push(id.clone());
+            }
         }
     }
     retracted.sort();
 
     let mut resolver = repository::Resolver::new();
     let remote = |r: &Option<String>| r.as_ref().is_some_and(|r| !r.starts_with("local:"));
-    let metadata = |harness: &str, session: &str| t3.get(&format!("{harness}:{session}"));
-    let mut session_repositories: HashMap<(String, String), String> = HashMap::new();
+    let metadata =
+        |harness: Harness, session: &str| t3.get(&format!("{}:{session}", harness.as_str()));
+    let mut session_repositories: HashMap<(Harness, String), String> = HashMap::new();
     let mut attempted = HashSet::new();
     for entry in &entries {
-        let e = &entry.event;
-        let key = (e.harness.clone(), e.session_id.clone());
-        let Some(m) = metadata(&e.harness, &e.session_id) else {
+        let e = &entry.usage;
+        let key = (e.harness, e.session_id.clone());
+        let Some(m) = metadata(e.harness, &e.session_id) else {
             continue;
         };
         if attempted.contains(&key) || remote(&resolver.get(&e.project)) {
@@ -551,8 +573,8 @@ fn build(
     let mut unknown = std::collections::BTreeSet::new();
     let mut events = Vec::with_capacity(entries.len());
     for entry in &entries {
-        let mut e = entry.event.clone();
-        let m = metadata(&e.harness, &e.session_id);
+        let mut e = event(&entry.usage);
+        let m = metadata(entry.usage.harness, &e.session_id);
         if let Some(title) = titles.get(&e.session_id) {
             e.session_title = title.clone();
         } else if let Some(m) = m {
@@ -573,7 +595,8 @@ fn build(
         e.service_tier = Some(entry.tier.clone());
         e.cache_write_1h_tokens = Some(entry.cache_write_1h);
         let r = resolver.get(&e.project);
-        e.repository = match session_repositories.get(&(e.harness.clone(), e.session_id.clone())) {
+        e.repository = match session_repositories.get(&(entry.usage.harness, e.session_id.clone()))
+        {
             Some(attached) if !remote(&r) => Some(attached.clone()),
             _ => r,
         };

@@ -7,18 +7,74 @@ use serde::{Deserialize, Serialize};
 
 use super::js::{J, iso_millis, js_number, json_array, parse_date, sha256_hex, valid_utf8};
 use super::json::{Read, Val, read_lines, valid};
-use crate::event::Event;
 
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Harness {
+    #[default]
+    Claude,
+    Codex,
+    Pi,
+    Grok,
+    Muse,
+}
+
+impl Harness {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Harness::Claude => "claude",
+            Harness::Codex => "codex",
+            Harness::Pi => "pi",
+            Harness::Grok => "grok",
+            Harness::Muse => "muse",
+        }
+    }
+}
+
+/// One usage record as its log states it, before attribution and pricing.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Usage {
+    pub id: String,
+    pub timestamp: String,
+    pub harness: Harness,
+    pub model: String,
+    pub project: String,
+    pub session_id: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub entrypoint: String,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub input_tokens: i64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub output_tokens: i64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub cache_read_tokens: i64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub cache_write_tokens: i64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub reasoning_tokens: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reported_cost_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requests: Option<i64>,
+}
+
+impl Usage {
+    pub fn token_total(&self) -> i64 {
+        self.input_tokens + self.output_tokens + self.cache_read_tokens + self.cache_write_tokens
+    }
 }
 
 /// One parsed usage record before cross-file deduplication.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Candidate {
-    #[serde(rename = "e")]
-    pub event: Event,
+    #[serde(rename = "u")]
+    pub usage: Usage,
     #[serde(rename = "s", skip_serializing_if = "is_false")]
     pub sidechain: bool,
     #[serde(rename = "w", skip_serializing_if = "is_zero")]
@@ -81,11 +137,11 @@ impl Parsed {
             session(&self.parent_id);
         }
         for entry in &self.events {
-            id(&entry.event.id);
+            id(&entry.usage.id);
             if !entry.legacy_event_id.is_empty() {
                 id(&entry.legacy_event_id);
             }
-            session(&entry.event.session_id);
+            session(&entry.usage.session_id);
         }
         for retracted in &self.retracted_ids {
             id(retracted);
@@ -205,10 +261,10 @@ pub fn timestamp(v: Val) -> String {
     }
 }
 
-fn new_event(harness: &str, stamp: &str, session: &str, model: String, project: &str) -> Event {
-    Event {
+fn new_event(harness: Harness, stamp: &str, session: &str, model: String, project: &str) -> Usage {
+    Usage {
         timestamp: stamp.into(),
-        harness: harness.into(),
+        harness,
         session_id: session.into(),
         model,
         project: project_text(project),
@@ -230,10 +286,10 @@ impl Claude {
     pub fn resume(parsed: Parsed) -> Self {
         let mut c = Claude::default();
         for (i, entry) in parsed.events.iter().enumerate() {
-            c.kept.insert((entry.event.id.clone(), entry.sidechain), i);
+            c.kept.insert((entry.usage.id.clone(), entry.sidechain), i);
             if !entry.sidechain && !entry.native_message_id.is_empty() {
                 let id = if entry.parent_event_id.is_empty() {
-                    &entry.event.id
+                    &entry.usage.id
                 } else {
                     &entry.parent_event_id
                 };
@@ -363,7 +419,7 @@ impl Claude {
                 cache_creation.fields(["ephemeral_1h_input_tokens", "ephemeral_5m_input_tokens"]);
             let [thinking, reasoning] =
                 output_details.fields(["thinking_tokens", "reasoning_tokens"]);
-            let mut e = new_event("claude", &stamp, &session, model_name(model), &cwd);
+            let mut e = new_event(Harness::Claude, &stamp, &session, model_name(model), &cwd);
             e.id = usage_id;
             e.entrypoint = via.clone();
             e.input_tokens = number(input);
@@ -380,7 +436,7 @@ impl Claude {
                 sidechain,
                 native_message_id: native_id.clone(),
                 parent_event_id: if advisor { id.clone() } else { String::new() },
-                event: e,
+                usage: e,
                 ..Default::default()
             });
         };
@@ -441,14 +497,14 @@ impl Claude {
     /// once per content block. The kept one is the first with the largest total, which is
     /// what deduplication would pick, at its first position.
     fn collapse(&mut self, mut entry: Candidate) {
-        let key = (entry.event.id.clone(), entry.sidechain);
+        let key = (entry.usage.id.clone(), entry.sidechain);
         let Some(&i) = self.kept.get(&key) else {
             self.kept.insert(key, self.parsed.events.len());
             self.parsed.events.push(entry);
             return;
         };
         let kept = &mut self.parsed.events[i];
-        if entry.event.token_total() > kept.event.token_total() {
+        if entry.usage.token_total() > kept.usage.token_total() {
             if entry.legacy_event_id.is_empty() {
                 entry.legacy_event_id = std::mem::take(&mut kept.legacy_event_id);
             }
@@ -552,8 +608,8 @@ fn codex_task_start(payload: Val) -> Option<(f64, f64)> {
     (!started.is_empty()).then(|| (parse_date(&started), precision))
 }
 
-fn codex_event(stamp: &str, session: &str, ctx: &CodexContext, tokens: &Tokens) -> Event {
-    let mut e = new_event("codex", stamp, session, ctx.model.clone(), &ctx.cwd);
+fn codex_event(stamp: &str, session: &str, ctx: &CodexContext, tokens: &Tokens) -> Usage {
+    let mut e = new_event(Harness::Codex, stamp, session, ctx.model.clone(), &ctx.cwd);
     let input = tokens[INPUT];
     e.cache_read_tokens = tokens[CACHED].min(input);
     e.cache_write_tokens = tokens[CACHE_WRITE]
@@ -765,7 +821,7 @@ pub fn parse_codex<R: BufRead>(r: &mut R, file: &str) -> std::io::Result<Parsed>
                     );
                     snapshots.push(Snapshot {
                         entry: Candidate {
-                            event: e,
+                            usage: e,
                             tier: current.tier,
                             ..Default::default()
                         },
@@ -820,7 +876,7 @@ pub fn parse_codex<R: BufRead>(r: &mut R, file: &str) -> std::io::Result<Parsed>
                 }
                 precise.push(Precise {
                     entry: Candidate {
-                        event: e,
+                        usage: e,
                         tier,
                         ..Default::default()
                     },
@@ -841,7 +897,7 @@ pub fn parse_codex<R: BufRead>(r: &mut R, file: &str) -> std::io::Result<Parsed>
     let first_record = precise
         .iter()
         .filter(|p| !p.thread_id.is_empty() && !compaction_markers.contains_key(&p.response_id))
-        .map(|p| p.entry.event.timestamp.as_str())
+        .map(|p| p.entry.usage.timestamp.as_str())
         .fold("\u{ffff}", |a, b| if b < a { b } else { a })
         .to_string();
     let boundary = if !parsed.parent_id.is_empty() && (copied_ancestry || inherited_task) {
@@ -854,11 +910,11 @@ pub fn parse_codex<R: BufRead>(r: &mut R, file: &str) -> std::io::Result<Parsed>
         None
     };
     for snapshot in &mut snapshots {
-        if snapshot.entry.event.timestamp >= first_record {
+        if snapshot.entry.usage.timestamp >= first_record {
             continue;
         }
         if boundary.is_some_and(|b| snapshot.line < b) {
-            parsed.retracted_ids.push(snapshot.entry.event.id.clone());
+            parsed.retracted_ids.push(snapshot.entry.usage.id.clone());
             continue;
         }
         snapshot.appended = Some(parsed.events.len());
@@ -876,7 +932,7 @@ pub fn parse_codex<R: BufRead>(r: &mut R, file: &str) -> std::io::Result<Parsed>
             continue;
         }
         if pending.thread_id.is_empty() && boundary.is_some_and(|b| pending.line < b) {
-            parsed.retracted_ids.push(pending.entry.event.id);
+            parsed.retracted_ids.push(pending.entry.usage.id);
             continue;
         }
         if let Some(marker_line) = marker {
@@ -885,27 +941,27 @@ pub fn parse_codex<R: BufRead>(r: &mut R, file: &str) -> std::io::Result<Parsed>
                 .get(index + 1)
                 .map_or(marker_line, |&next| marker_line.min(next));
             let covered = snapshots[low..].iter_mut().take_while(|s| s.line < boundary).find(|s| {
-                s.entry.event.timestamp < first_record
+                s.entry.usage.timestamp < first_record
                     && (s.tokens == pending.tokens
                         || matches!((pending.thread_tokens, s.total), (Some(a), Some(b)) if a == b))
             });
             if let Some(covered) = covered {
-                covered.entry.event.id = pending.entry.event.id.clone();
+                covered.entry.usage.id = pending.entry.usage.id.clone();
                 if let Some(i) = covered.appended {
-                    parsed.events[i].event.id = pending.entry.event.id;
+                    parsed.events[i].usage.id = pending.entry.usage.id;
                 }
                 continue;
             }
         }
         if let Some(turn) = contexts.get(&pending.turn_id) {
-            pending.entry.event.model = turn.model.clone();
-            pending.entry.event.project = project_text(&turn.cwd);
+            pending.entry.usage.model = turn.model.clone();
+            pending.entry.usage.project = project_text(&turn.cwd);
             if pending.entry.tier.is_empty() {
                 pending.entry.tier = turn.tier.clone();
             }
         }
         if !pending.explicit_model.is_empty() {
-            pending.entry.event.model = model_text(pending.explicit_model);
+            pending.entry.usage.model = model_text(pending.explicit_model);
         }
         parsed.events.push(pending.entry);
     }
@@ -979,7 +1035,7 @@ pub fn parse_pi<R: BufRead>(r: &mut R, file: &str) -> std::io::Result<Parsed> {
             "reasoning",
             "cacheWrite1h",
         ]);
-        let mut e = new_event("pi", &stamp, &parsed.session_id, model.clone(), &cwd);
+        let mut e = new_event(Harness::Pi, &stamp, &parsed.session_id, model.clone(), &cwd);
         e.input_tokens = number(input);
         e.output_tokens = number(output);
         e.cache_read_tokens = number(cache_read);
@@ -1000,7 +1056,7 @@ pub fn parse_pi<R: BufRead>(r: &mut R, file: &str) -> std::io::Result<Parsed> {
         };
         let cache_write_1h = e.cache_write_tokens.min(number(write_1h));
         parsed.events.push(Candidate {
-            event: e,
+            usage: e,
             cache_write_1h,
             ..Default::default()
         });
@@ -1158,7 +1214,7 @@ impl Muse {
             model = self.model.clone();
         }
         let mut e = new_event(
-            "muse",
+            Harness::Muse,
             &stamp,
             &self.parsed.session_id,
             model_text(model),
@@ -1188,7 +1244,7 @@ impl Muse {
             fallback_id("muse", &self.parsed.session_id, &stamp, ordinal)
         };
         self.parsed.events.push(Candidate {
-            event: e,
+            usage: e,
             ..Default::default()
         });
         true
@@ -1246,7 +1302,7 @@ pub mod tests {
             "/p/s1.jsonl",
         );
         assert_eq!(parsed.events.len(), 1);
-        assert_eq!(parsed.events[0].event.output_tokens, 5);
+        assert_eq!(parsed.events[0].usage.output_tokens, 5);
         assert_eq!(parsed.events[0].tier, "standard");
         assert_eq!(
             (parsed.malformed, parsed.session_title.as_str()),
@@ -1263,7 +1319,7 @@ pub mod tests {
             "/p/s1.jsonl",
         );
         assert_eq!(parsed.events.len(), 1);
-        assert_eq!(parsed.events[0].event.entrypoint, "sdk-cli");
+        assert_eq!(parsed.events[0].usage.entrypoint, "sdk-cli");
     }
 
     #[test]
@@ -1304,7 +1360,7 @@ pub mod tests {
         )
         .unwrap();
         assert_eq!(parent.events.len(), 2);
-        let second = &parent.events[1].event;
+        let second = &parent.events[1].usage;
         assert_eq!(
             (
                 second.input_tokens,

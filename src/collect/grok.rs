@@ -7,8 +7,7 @@ use std::path::{Path, PathBuf};
 
 use super::js::{encode_uri_component, iso_millis, js_trim, parse_date, valid_utf8};
 use super::json::{Val, read_lines, valid};
-use super::parse::{Candidate, Parsed};
-use crate::event::Event;
+use super::parse::{Candidate, Harness, Parsed, Usage};
 
 struct Session {
     session_id: String,
@@ -30,7 +29,7 @@ fn turn_id(session: &str, turn: i64, model: &str) -> String {
     )
 }
 
-fn turn_number(e: &Event) -> i64 {
+fn turn_number(e: &Usage) -> i64 {
     e.id.split(':')
         .nth(3)
         .and_then(|n| n.parse().ok())
@@ -109,10 +108,10 @@ fn append_usage(
         } else {
             model
         };
-        let mut e = Event {
+        let mut e = Usage {
             id: turn_id(&s.session_id, turn, &model),
             timestamp: at.into(),
-            harness: "grok".into(),
+            harness: Harness::Grok,
             session_id: s.session_id.clone(),
             model,
             project: s.project.clone(),
@@ -126,12 +125,12 @@ fn append_usage(
         if !incomplete(f[7]) && !incomplete(f[8]) && !incomplete(usage.get("usageIsIncomplete")) {
             if let Some(ticks) = count(f[6]).filter(|t| *t > 0) {
                 let cost = f[6].num().unwrap_or(ticks as f64) / 1e10;
-                (e.cost_usd, e.cost_known, e.reported_cost_usd) = (cost, true, Some(cost));
+                e.reported_cost_usd = Some(cost);
             }
         }
         e.requests = count(f[5]);
         parsed.events.push(Candidate {
-            event: e,
+            usage: e,
             ..Default::default()
         });
     }
@@ -234,7 +233,7 @@ fn parse_updates(data: &[u8], s: &Session) -> Parsed {
             if existing.is_some() {
                 parsed
                     .events
-                    .retain(|entry| turn_number(&entry.event) != ordinal);
+                    .retain(|entry| turn_number(&entry.usage) != ordinal);
             }
             parsed.events.extend(replacement.events);
         }
@@ -407,11 +406,11 @@ pub fn collect(roots: &[PathBuf]) -> (Vec<Parsed>, Vec<String>) {
     for s in &sessions {
         let turns = native_turns.entry(&s.session_id).or_default();
         for entry in s.parsed.iter().flat_map(|p| &p.events) {
-            let key = format!("{}:{}", turn_number(&entry.event), entry.event.model);
+            let key = format!("{}:{}", turn_number(&entry.usage), entry.usage.model);
             turns
                 .entry(key)
                 .or_default()
-                .insert(parse_date(&entry.event.timestamp) as i64);
+                .insert(parse_date(&entry.usage.timestamp) as i64);
         }
     }
     let orphans = sessions
@@ -445,7 +444,7 @@ pub fn collect(roots: &[PathBuf]) -> (Vec<Parsed>, Vec<String>) {
             if s.parent_id.is_empty() {
                 continue;
             }
-            let e = &mut entry.event;
+            let e = &mut entry.usage;
             let mut owner = s;
             let mut visited = HashSet::new();
             while !owner.parent_id.is_empty() && visited.insert(owner.session_id.as_str()) {

@@ -165,13 +165,15 @@ impl<'a> Iterator for Members<'a> {
 fn string_end(s: &str, i: usize) -> usize {
     let b = s.as_bytes();
     let mut j = i + 1;
-    while j < b.len() {
-        match b[j] {
-            b'\\' => j += 1,
-            b'"' => return j + 1,
-            _ => {}
+    while let Some(k) = b
+        .get(j..)
+        .and_then(|rest| memchr::memchr2(b'"', b'\\', rest))
+    {
+        j += k;
+        if b[j] == b'"' {
+            return j + 1;
         }
-        j += 1;
+        j += 2;
     }
     b.len()
 }
@@ -305,25 +307,30 @@ impl Validator<'_> {
 
     fn string(&self, mut i: usize) -> Option<usize> {
         loop {
+            let rest = self.0.get(i..)?;
+            let k = memchr::memchr2(b'"', b'\\', rest)?;
+            if rest[..k]
+                .iter()
+                .fold(false, |control, &c| control | (c < b' '))
+            {
+                return None;
+            }
+            i += k;
+            if self.0[i] == b'"' {
+                return Some(i + 1);
+            }
+            i += 1;
             match self.at(i)? {
-                c if c < b' ' => return None,
-                b'"' => return Some(i + 1),
-                b'\\' => {
-                    i += 1;
-                    match self.at(i)? {
-                        b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => {}
-                        b'u' => {
-                            for _ in 0..4 {
-                                i += 1;
-                                if !self.at(i)?.is_ascii_hexdigit() {
-                                    return None;
-                                }
-                            }
+                b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => {}
+                b'u' => {
+                    for _ in 0..4 {
+                        i += 1;
+                        if !self.at(i)?.is_ascii_hexdigit() {
+                            return None;
                         }
-                        _ => return None,
                     }
                 }
-                _ => {}
+                _ => return None,
             }
             i += 1;
         }
