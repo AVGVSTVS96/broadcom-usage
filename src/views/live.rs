@@ -13,7 +13,7 @@ use super::timeframe::{locale_compare, parse_millis};
 const DAY_MS: f64 = 86_400_000.0;
 
 /// A Claude session running now.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct LiveSession {
     pub id: String,
     pub label: String,

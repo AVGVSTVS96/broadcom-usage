@@ -1,0 +1,419 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SessionUsage",
+  "description": "token-tracker's GetSessionUsage answer for one range.",
+  "type": "object",
+  "properties": {
+    "generatedAt": {
+      "type": "integer",
+      "format": "int64"
+    },
+    "period": {
+      "$ref": "#/$defs/Period"
+    },
+    "bucket": {
+      "type": "string"
+    },
+    "buckets": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "format": "int64"
+      }
+    },
+    "sessions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Session"
+      }
+    },
+    "windows": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/WindowUsage"
+      }
+    },
+    "previous": {
+      "$ref": "#/$defs/Previous"
+    },
+    "devices": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Device"
+      }
+    },
+    "sdkFactor": {
+      "description": "The five-hour weight Agent SDK requests were charged at.",
+      "type": "number",
+      "format": "double"
+    }
+  },
+  "required": [
+    "generatedAt",
+    "period",
+    "bucket",
+    "buckets",
+    "sessions",
+    "windows",
+    "previous",
+    "devices",
+    "sdkFactor"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "Period": {
+      "description": "A range's bounds in unix ms and the zone its days are counted in.",
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "to": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "timezone": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "timezone"
+      ],
+      "additionalProperties": false
+    },
+    "Session": {
+      "description": "One session's usage in a range.",
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "deviceId": {
+          "type": "string"
+        },
+        "harness": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "project": {
+          "type": "string"
+        },
+        "repository": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "entrypoint": {
+          "description": "How its Claude Code process was started (cli, sdk-cli, sdk-ts, t3-code...); \"\" when unknown.",
+          "type": "string"
+        },
+        "firstAt": {
+          "type": "number",
+          "format": "double"
+        },
+        "lastAt": {
+          "type": "number",
+          "format": "double"
+        },
+        "amount": {
+          "$ref": "#/$defs/Amount"
+        },
+        "models": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Amount"
+          }
+        },
+        "accounts": {
+          "description": "By the account the session was bound to at each request's time; \"none\" when unbound.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Amount"
+          }
+        },
+        "series": {
+          "description": "Sparse: [bucket index, tokens, API $, plan $, five-hour points, week points].",
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "minItems": 6,
+            "maxItems": 6
+          }
+        },
+        "limits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SessionLimit"
+          }
+        }
+      },
+      "required": [
+        "key",
+        "deviceId",
+        "harness",
+        "sessionId",
+        "project",
+        "repository",
+        "cwd",
+        "title",
+        "entrypoint",
+        "firstAt",
+        "lastAt",
+        "amount",
+        "models",
+        "accounts",
+        "series",
+        "limits"
+      ],
+      "additionalProperties": false
+    },
+    "Amount": {
+      "description": "Tokens, requests and dollars summed over requests.",
+      "type": "object",
+      "properties": {
+        "tokens": {
+          "type": "number",
+          "format": "double"
+        },
+        "input": {
+          "type": "number",
+          "format": "double"
+        },
+        "output": {
+          "type": "number",
+          "format": "double"
+        },
+        "cacheRead": {
+          "type": "number",
+          "format": "double"
+        },
+        "cacheWrite": {
+          "type": "number",
+          "format": "double"
+        },
+        "reasoning": {
+          "type": "number",
+          "format": "double"
+        },
+        "requests": {
+          "type": "number",
+          "format": "double"
+        },
+        "apiUsd": {
+          "type": "number",
+          "format": "double"
+        },
+        "planUsd": {
+          "type": "number",
+          "format": "double"
+        },
+        "unpricedTokens": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "tokens",
+        "input",
+        "output",
+        "cacheRead",
+        "cacheWrite",
+        "reasoning",
+        "requests",
+        "apiUsd",
+        "planUsd",
+        "unpricedTokens"
+      ],
+      "additionalProperties": false
+    },
+    "SessionLimit": {
+      "description": "The limit points one session was charged on one account.",
+      "type": "object",
+      "properties": {
+        "account": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "points": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "account",
+        "kind",
+        "points"
+      ],
+      "additionalProperties": false
+    },
+    "WindowUsage": {
+      "description": "The points of one account's limit window that fell in the range: assigned to the\nrange's requests, or unassigned when no bound request explains the rise.",
+      "type": "object",
+      "properties": {
+        "account": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "resetsAt": {
+          "type": "number",
+          "format": "double"
+        },
+        "since": {
+          "type": "number",
+          "format": "double"
+        },
+        "sampled": {
+          "type": "number",
+          "format": "double"
+        },
+        "assigned": {
+          "type": "number",
+          "format": "double"
+        },
+        "unassigned": {
+          "type": "number",
+          "format": "double"
+        },
+        "rises": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          }
+        }
+      },
+      "required": [
+        "account",
+        "kind",
+        "resetsAt",
+        "since",
+        "sampled",
+        "assigned",
+        "unassigned",
+        "rises"
+      ],
+      "additionalProperties": false
+    },
+    "Previous": {
+      "description": "The period before the range, summed.",
+      "type": "object",
+      "properties": {
+        "tokens": {
+          "type": "number",
+          "format": "double"
+        },
+        "input": {
+          "type": "number",
+          "format": "double"
+        },
+        "output": {
+          "type": "number",
+          "format": "double"
+        },
+        "cacheRead": {
+          "type": "number",
+          "format": "double"
+        },
+        "cacheWrite": {
+          "type": "number",
+          "format": "double"
+        },
+        "reasoning": {
+          "type": "number",
+          "format": "double"
+        },
+        "requests": {
+          "type": "number",
+          "format": "double"
+        },
+        "apiUsd": {
+          "type": "number",
+          "format": "double"
+        },
+        "planUsd": {
+          "type": "number",
+          "format": "double"
+        },
+        "unpricedTokens": {
+          "type": "number",
+          "format": "double"
+        },
+        "sessions": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "tokens",
+        "input",
+        "output",
+        "cacheRead",
+        "cacheWrite",
+        "reasoning",
+        "requests",
+        "apiUsd",
+        "planUsd",
+        "unpricedTokens",
+        "sessions"
+      ],
+      "additionalProperties": false
+    },
+    "Device": {
+      "description": "A machine (or GitHub repository) whose records the store holds.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "default": ""
+        },
+        "label": {
+          "type": "string",
+          "default": ""
+        },
+        "syncedAt": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "default": null
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "syncedAt"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

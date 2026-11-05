@@ -6,7 +6,7 @@ use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 
 /// One of the time ranges the Usage page offers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum Range {
     #[serde(rename = "today")]
     Today,

@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LiveSession",
+  "description": "A Claude session running now.",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "label": {
+      "type": "string"
+    },
+    "row": {
+      "description": "The Usage row key this session ranks under with by=agent.",
+      "type": "string"
+    },
+    "app": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "state": {
+      "type": "string"
+    },
+    "account": {
+      "description": "The account the pool has the session on.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "host": {
+      "type": "string"
+    },
+    "cwd": {
+      "type": "string"
+    },
+    "since": {
+      "type": "number",
+      "format": "double"
+    },
+    "entrypoint": {
+      "description": "How its Claude Code process was started, from its transcript; \"\" until it has one.",
+      "type": "string"
+    },
+    "question": {
+      "description": "What a blocked session waits on: its job's `needs`, else its `detail`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reply": {
+      "description": "The reply its job suggests.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "id",
+    "label",
+    "row",
+    "app",
+    "state",
+    "account",
+    "host",
+    "cwd",
+    "since",
+    "entrypoint",
+    "question",
+    "reply"
+  ],
+  "additionalProperties": false
+}

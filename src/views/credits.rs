@@ -7,7 +7,7 @@ use crate::event::Event;
 
 /// A grant and its last balance read off Console, which no API key can query.
 /// Operators keep these non-secret observations in the pool state folder (credits.json).
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ApiCredit {
     pub starts_at: i64,
@@ -24,7 +24,7 @@ pub struct ApiCredit {
 
 /// The grant carried forward from its Console reading: `remaining` is that reading
 /// less what the proxy priced on the credential since.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CreditUsage {
     #[serde(flatten)]
@@ -36,7 +36,7 @@ pub struct CreditUsage {
     pub last_request_at: Option<i64>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct CreditsView {
     pub api: Vec<CreditUsage>,
 }

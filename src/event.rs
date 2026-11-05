@@ -94,7 +94,7 @@ impl Event {
 }
 
 /// A machine (or GitHub repository) whose records the store holds.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Device {
     #[serde(default)]

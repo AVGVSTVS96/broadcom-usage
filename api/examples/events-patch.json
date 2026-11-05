@@ -11,7 +11,9 @@
       "host": "server",
       "cwd": "cwd-6",
       "since": 1790000000000,
-      "entrypoint": ""
+      "entrypoint": "",
+      "question": null,
+      "reply": null
     },
     "s:id-gone": null
   }

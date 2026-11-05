@@ -36,7 +36,7 @@ const DIMENSIONS: [&str; 7] = [
 ];
 
 /// What the Usage page asks for.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct Query {
     pub range: Range,
     pub by: String,
@@ -94,7 +94,7 @@ pub fn parse_query(query: &str) -> Query {
 }
 
 /// Percentage points of account limits, summed over accounts and windows. Null: nothing to estimate from.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Points {
     pub five_hour: Option<f64>,
@@ -102,7 +102,7 @@ pub struct Points {
 }
 
 /// One account's points within a row.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct AccountPoints {
     pub account: String,
     #[serde(flatten)]
@@ -110,7 +110,7 @@ pub struct AccountPoints {
 }
 
 /// The rows in view, summed.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Totals {
     #[serde(flatten)]
@@ -121,7 +121,7 @@ pub struct Totals {
 }
 
 /// One ranked group.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Row {
     pub key: String,
@@ -149,7 +149,7 @@ pub struct Row {
 
 /// How much of the view ran on the Agent SDK or `claude -p`, which the five-hour
 /// meter charges `factor` times more per token than interactive Claude Code.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSdkUsage {
     pub api_usd: f64,
@@ -158,14 +158,14 @@ pub struct AgentSdkUsage {
     pub factor: f64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct Bucket {
     pub at: i64,
     pub size: String,
 }
 
 /// One line of the chart.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct Series {
     pub key: String,
     pub label: String,
@@ -174,7 +174,7 @@ pub struct Series {
 }
 
 /// Limit points no bound request explains.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct Unassigned {
     pub account: String,
     pub kind: String,
@@ -182,7 +182,7 @@ pub struct Unassigned {
 }
 
 /// How much of the view is named, and since when limits are known.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Coverage {
     pub named_api_usd: f64,
@@ -192,7 +192,7 @@ pub struct Coverage {
 }
 
 /// One value of a dimension and how many sessions have it.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct Facet {
     pub id: String,
     pub label: String,
@@ -200,7 +200,7 @@ pub struct Facet {
 }
 
 /// Where the view's data came from and when.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Sources {
     pub devices: Vec<Device>,
@@ -209,7 +209,7 @@ pub struct Sources {
 }
 
 /// The Usage page: totals, the ranked rows, the top-seven series and coverage for one query.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageView {
     pub query: Query,

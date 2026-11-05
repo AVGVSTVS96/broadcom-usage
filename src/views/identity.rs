@@ -405,3 +405,31 @@ mod tests {
         );
     }
 }
+
+impl schemars::JsonSchema for Who {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Who".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let text = serde_json::json!({ "type": "string" });
+        let maybe = serde_json::json!({ "type": ["string", "null"] });
+        let kind = |name: &str, fields: &[(&str, &serde_json::Value)]| {
+            let mut properties = serde_json::Map::new();
+            properties.insert("kind".into(), serde_json::json!({ "const": name }));
+            for (field, schema) in fields {
+                properties.insert(field.to_string(), (*schema).clone());
+            }
+            serde_json::json!({ "type": "object", "properties": properties })
+        };
+        schemars::json_schema!({
+            "oneOf": [
+                kind("thread", &[("app", &text), ("thread", &text), ("name", &text), ("href", &maybe)]),
+                kind("job", &[("owner", &maybe), ("unit", &text)]),
+                kind("session", &[("title", &text), ("project", &text), ("href", &maybe)]),
+                kind("action", &[("repo", &text), ("workflow", &text), ("run", &maybe), ("href", &maybe)]),
+                kind("project", &[("project", &text)]),
+            ]
+        })
+    }
+}

@@ -13,17 +13,15 @@ use super::limits::{
     AccountLookup, Binding, KINDS, LimitReading, binding_history, sorted_readings,
 };
 use super::plans::PlanPricing;
-use super::timeframe::{
-    Range, bucket_starts, locale_compare, provider, usage_timeframe,
-};
 use super::row::Row;
+use super::timeframe::{Range, bucket_starts, locale_compare, provider, usage_timeframe};
 use crate::event::Device;
 
 /// The account of requests bound to no account, such as Codex or unpooled sessions.
 pub const NO_ACCOUNT: &str = "none";
 
 /// Tokens, requests and dollars summed over requests.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Amount {
     pub tokens: f64,
@@ -95,7 +93,7 @@ impl Amount {
 pub type Amounts = IndexMap<String, Amount, foldhash::fast::RandomState>;
 
 /// The limit points one session was charged on one account.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SessionLimit {
     pub account: String,
     pub kind: String,
@@ -103,7 +101,7 @@ pub struct SessionLimit {
 }
 
 /// One session's usage in a range.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Session {
     pub key: String,
@@ -129,7 +127,7 @@ pub struct Session {
 
 /// The points of one account's limit window that fell in the range: assigned to the
 /// range's requests, or unassigned when no bound request explains the rise.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowUsage {
     pub account: String,
@@ -143,7 +141,7 @@ pub struct WindowUsage {
 }
 
 /// A range's bounds in unix ms and the zone its days are counted in.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Period {
     pub from: i64,
     pub to: i64,
@@ -151,7 +149,7 @@ pub struct Period {
 }
 
 /// The period before the range, summed.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Previous {
     #[serde(flatten)]
     pub amount: Amount,
@@ -159,7 +157,7 @@ pub struct Previous {
 }
 
 /// token-tracker's GetSessionUsage answer for one range.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionUsage {
     pub generated_at: i64,
@@ -196,7 +194,9 @@ pub fn prepare(rows: &[Row]) -> Vec<Prepared<'_>> {
     rows.iter()
         .map(|row| Prepared {
             row,
-            provider: providers.entry(&row.model).or_insert_with(|| provider(&row.model)),
+            provider: providers
+                .entry(&row.model)
+                .or_insert_with(|| provider(&row.model)),
             tokens: row.token_total() as f64,
         })
         .collect()
@@ -305,7 +305,11 @@ pub fn session_usage(
                         device_id: device.to_string(),
                         harness: event.harness.to_string(),
                         session_id: event.session_id.to_string(),
-                        project: event.repository.as_deref().unwrap_or(&event.project).to_string(),
+                        project: event
+                            .repository
+                            .as_deref()
+                            .unwrap_or(&event.project)
+                            .to_string(),
                         repository: event.repository.as_deref().map(String::from),
                         cwd: event.project.to_string(),
                         title: None,

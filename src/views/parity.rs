@@ -18,6 +18,19 @@ fn write(dir: &Path, name: &str, value: &impl Serialize) {
     std::fs::write(dir.join(name), serde_json::to_vec(value).unwrap()).unwrap();
 }
 
+/// Checks a real answer against its published schema.
+fn conforms(schema: &str, value: &impl Serialize) {
+    let schema = schemas().into_iter().find(|(n, _)| *n == schema).unwrap().1;
+    let value = serde_json::to_value(value).unwrap();
+    let errors: Vec<String> = jsonschema::validator_for(&schema.to_value())
+        .unwrap()
+        .iter_errors(&value)
+        .take(5)
+        .map(|e| format!("{e} at {}", e.instance_path()))
+        .collect();
+    assert!(errors.is_empty(), "{errors:#?}");
+}
+
 #[test]
 #[ignore = "needs DECK_PARITY"]
 fn parity() {
@@ -119,6 +132,7 @@ fn parity() {
             r.as_str()
         );
 
+        conforms("sessions", &usage);
         write(&out, &format!("rust-sessions-{}.json", r.as_str()), &usage);
         tracked.insert(r, usage);
     }
@@ -176,15 +190,14 @@ fn parity() {
         })
         .collect();
     eprintln!("{} views {:?}", queries.len(), started.elapsed());
+    answers.iter().for_each(|a| conforms("usage", &a.view));
     write(&out, "rust-views.json", &answers);
 
     let started = Instant::now();
     let grants = read_grants(&state.join("credits.json")).unwrap();
-    write(
-        &out,
-        "rust-credits.json",
-        &credits(&grants, &events, now).unwrap(),
-    );
+    let view = credits(&grants, &events, now).unwrap();
+    conforms("credits", &view);
+    write(&out, "rust-credits.json", &view);
     eprintln!("credits {:?}", started.elapsed());
 
     if let (Ok(claude), Ok(hex_dir)) = (
@@ -200,6 +213,9 @@ fn parity() {
             &mut HashMap::new(),
             now,
         );
+        live.sessions
+            .iter()
+            .for_each(|s| conforms("live-session", s));
         let entries: BTreeMap<String, serde_json::Value> = live.entries().into_iter().collect();
         write(&out, "rust-live.json", &entries);
     }

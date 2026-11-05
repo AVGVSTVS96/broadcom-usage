@@ -19,6 +19,7 @@ mimalloc = "0.1"
 notify = "8"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip"] }
+schemars = { version = "1", features = ["indexmap2"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip", "raw_value"] }
@@ -28,6 +29,9 @@ tokio-stream = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
+
+[dev-dependencies]
+jsonschema = { version = "0.60", default-features = false }
 
 [profile.release]
 debug = "line-tables-only"

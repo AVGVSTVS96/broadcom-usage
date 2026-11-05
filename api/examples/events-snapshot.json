@@ -11,7 +11,9 @@
       "host": "server",
       "cwd": "cwd-6",
       "since": 1790000000000,
-      "entrypoint": ""
+      "entrypoint": "",
+      "question": null,
+      "reply": null
     },
     "s:id-7": {
       "id": "id-8",
@@ -23,7 +25,9 @@
       "host": "server",
       "cwd": "cwd-13",
       "since": 1790003600000,
-      "entrypoint": "cli"
+      "entrypoint": "cli",
+      "question": null,
+      "reply": null
     },
     "app:buzz": {
       "connected": true

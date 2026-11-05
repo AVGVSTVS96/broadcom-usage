@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CreditsView",
+  "type": "object",
+  "properties": {
+    "api": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/CreditUsage"
+      }
+    }
+  },
+  "required": [
+    "api"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "CreditUsage": {
+      "description": "The grant carried forward from its Console reading: `remaining` is that reading\nless what the proxy priced on the credential since.",
+      "type": "object",
+      "properties": {
+        "startsAt": {
+          "type": "integer",
+          "format": "int64",
+          "default": 0
+        },
+        "account": {
+          "type": "string",
+          "default": ""
+        },
+        "organization": {
+          "type": "string",
+          "default": ""
+        },
+        "credentialId": {
+          "type": "string",
+          "default": ""
+        },
+        "remaining": {
+          "type": "number",
+          "format": "double",
+          "default": 0.0
+        },
+        "allowance": {
+          "type": "number",
+          "format": "double",
+          "default": 0.0
+        },
+        "monthlyCap": {
+          "type": "number",
+          "format": "double",
+          "default": 0.0
+        },
+        "observedAt": {
+          "type": "integer",
+          "format": "int64",
+          "default": 0
+        },
+        "expiresAt": {
+          "type": "integer",
+          "format": "int64",
+          "default": 0
+        },
+        "renewsAt": {
+          "type": "integer",
+          "format": "int64",
+          "default": 0
+        },
+        "recorded": {
+          "type": "number",
+          "format": "double"
+        },
+        "proxyUsd": {
+          "type": "number",
+          "format": "double"
+        },
+        "requests": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "unpriced": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "lastRequestAt": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        }
+      },
+      "required": [
+        "startsAt",
+        "account",
+        "organization",
+        "credentialId",
+        "remaining",
+        "allowance",
+        "monthlyCap",
+        "observedAt",
+        "expiresAt",
+        "renewsAt",
+        "recorded",
+        "proxyUsd",
+        "requests",
+        "unpriced",
+        "lastRequestAt"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

@@ -9,6 +9,7 @@ mod limits;
 mod live;
 mod plans;
 mod row;
+mod schema;
 mod sessions;
 mod timeframe;
 mod view;
@@ -21,8 +22,9 @@ pub use credits::{ApiCredit, CreditUsage, CreditsView, credits, read_grants};
 pub use identity::{Names, Past, Who, load_names, read_past};
 pub use limits::{AppendLog, Binding, LimitReading, parse_binding, parse_reading};
 pub use live::{Live, LiveSession, Processes, live_map, read_processes, seats_of};
-pub use row::Row;
 pub use plans::{ConfiguredPlan, Plan, PlanPricing, read_plans};
+pub use row::Row;
+pub use schema::schemas;
 pub use sessions::{Amount, LimitInputs, Prepared, Session, SessionUsage, prepare, session_usage};
 pub use timeframe::{Range, parse_millis};
 pub use view::{

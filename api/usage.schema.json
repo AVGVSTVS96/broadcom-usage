@@ -1,0 +1,794 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UsageView",
+  "description": "The Usage page: totals, the ranked rows, the top-seven series and coverage for one query.",
+  "type": "object",
+  "properties": {
+    "query": {
+      "$ref": "#/$defs/Query"
+    },
+    "period": {
+      "$ref": "#/$defs/Period"
+    },
+    "totals": {
+      "$ref": "#/$defs/Totals"
+    },
+    "previous": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Totals"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "buckets": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Bucket"
+      }
+    },
+    "series": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Series"
+      }
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Row"
+      }
+    },
+    "rowCount": {
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    },
+    "coverage": {
+      "$ref": "#/$defs/Coverage"
+    },
+    "facets": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/Facet"
+        }
+      }
+    },
+    "sources": {
+      "$ref": "#/$defs/Sources"
+    },
+    "agentSdk": {
+      "$ref": "#/$defs/AgentSdkUsage"
+    }
+  },
+  "required": [
+    "query",
+    "period",
+    "totals",
+    "previous",
+    "buckets",
+    "series",
+    "rows",
+    "rowCount",
+    "coverage",
+    "facets",
+    "sources",
+    "agentSdk"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "Query": {
+      "description": "What the Usage page asks for.",
+      "type": "object",
+      "properties": {
+        "range": {
+          "$ref": "#/$defs/Range"
+        },
+        "by": {
+          "type": "string"
+        },
+        "measure": {
+          "type": "string"
+        },
+        "where": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "search": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "within": {
+          "description": "Only rows under this agent row key, so a row drills into its sessions.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "range",
+        "by",
+        "measure",
+        "where",
+        "search",
+        "limit",
+        "within"
+      ],
+      "additionalProperties": false
+    },
+    "Range": {
+      "description": "One of the time ranges the Usage page offers.",
+      "type": "string",
+      "enum": [
+        "today",
+        "yesterday",
+        "7d",
+        "30d",
+        "6m"
+      ]
+    },
+    "Period": {
+      "description": "A range's bounds in unix ms and the zone its days are counted in.",
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "to": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "timezone": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "timezone"
+      ],
+      "additionalProperties": false
+    },
+    "Totals": {
+      "description": "The rows in view, summed.",
+      "type": "object",
+      "properties": {
+        "tokens": {
+          "type": "number",
+          "format": "double"
+        },
+        "input": {
+          "type": "number",
+          "format": "double"
+        },
+        "output": {
+          "type": "number",
+          "format": "double"
+        },
+        "cacheRead": {
+          "type": "number",
+          "format": "double"
+        },
+        "cacheWrite": {
+          "type": "number",
+          "format": "double"
+        },
+        "reasoning": {
+          "type": "number",
+          "format": "double"
+        },
+        "requests": {
+          "type": "number",
+          "format": "double"
+        },
+        "apiUsd": {
+          "type": "number",
+          "format": "double"
+        },
+        "planUsd": {
+          "type": "number",
+          "format": "double"
+        },
+        "unpricedTokens": {
+          "type": "number",
+          "format": "double"
+        },
+        "sessions": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "cacheHitRate": {
+          "type": "number",
+          "format": "double"
+        },
+        "points": {
+          "$ref": "#/$defs/Points"
+        }
+      },
+      "required": [
+        "tokens",
+        "input",
+        "output",
+        "cacheRead",
+        "cacheWrite",
+        "reasoning",
+        "requests",
+        "apiUsd",
+        "planUsd",
+        "unpricedTokens",
+        "sessions",
+        "cacheHitRate",
+        "points"
+      ],
+      "additionalProperties": false
+    },
+    "Points": {
+      "description": "Percentage points of account limits, summed over accounts and windows. Null: nothing to estimate from.",
+      "type": "object",
+      "properties": {
+        "fiveHour": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "week": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      },
+      "required": [
+        "fiveHour",
+        "week"
+      ],
+      "additionalProperties": false
+    },
+    "Bucket": {
+      "type": "object",
+      "properties": {
+        "at": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "size": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "size"
+      ],
+      "additionalProperties": false
+    },
+    "Series": {
+      "description": "One line of the chart.",
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "color": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "required": [
+        "key",
+        "label",
+        "color",
+        "values"
+      ],
+      "additionalProperties": false
+    },
+    "Row": {
+      "description": "One ranked group.",
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "who": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Who"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "color": {
+          "description": "Categorical slot 0 to 6 for the top rows by API value in the unfiltered range, 7 for the rest.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "amount": {
+          "$ref": "#/$defs/Amount"
+        },
+        "points": {
+          "$ref": "#/$defs/Points"
+        },
+        "byAccount": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AccountPoints"
+          }
+        },
+        "sessions": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "lastActiveAt": {
+          "type": "number",
+          "format": "double"
+        },
+        "series": {
+          "description": "The chosen measure per bucket of the view's buckets.",
+          "type": "array",
+          "items": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "live": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "entrypoint": {
+          "description": "The one its sessions share, \"mixed\" when they differ, \"\" when unknown.",
+          "type": "string"
+        },
+        "agentSdk": {
+          "description": "The share of its API value that ran on the Agent SDK or `claude -p`, 0 to 1.",
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "key",
+        "label",
+        "detail",
+        "who",
+        "color",
+        "amount",
+        "points",
+        "byAccount",
+        "sessions",
+        "lastActiveAt",
+        "series",
+        "live",
+        "entrypoint",
+        "agentSdk"
+      ],
+      "additionalProperties": false
+    },
+    "Who": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "thread"
+            },
+            "app": {
+              "type": "string"
+            },
+            "thread": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "href": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "app",
+            "thread",
+            "name",
+            "href"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "job"
+            },
+            "owner": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "unit": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "owner",
+            "unit"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "session"
+            },
+            "title": {
+              "type": "string"
+            },
+            "project": {
+              "type": "string"
+            },
+            "href": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "title",
+            "project",
+            "href"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "action"
+            },
+            "repo": {
+              "type": "string"
+            },
+            "workflow": {
+              "type": "string"
+            },
+            "run": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "href": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "repo",
+            "workflow",
+            "run",
+            "href"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "project"
+            },
+            "project": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "project"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Amount": {
+      "description": "Tokens, requests and dollars summed over requests.",
+      "type": "object",
+      "properties": {
+        "tokens": {
+          "type": "number",
+          "format": "double"
+        },
+        "input": {
+          "type": "number",
+          "format": "double"
+        },
+        "output": {
+          "type": "number",
+          "format": "double"
+        },
+        "cacheRead": {
+          "type": "number",
+          "format": "double"
+        },
+        "cacheWrite": {
+          "type": "number",
+          "format": "double"
+        },
+        "reasoning": {
+          "type": "number",
+          "format": "double"
+        },
+        "requests": {
+          "type": "number",
+          "format": "double"
+        },
+        "apiUsd": {
+          "type": "number",
+          "format": "double"
+        },
+        "planUsd": {
+          "type": "number",
+          "format": "double"
+        },
+        "unpricedTokens": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "tokens",
+        "input",
+        "output",
+        "cacheRead",
+        "cacheWrite",
+        "reasoning",
+        "requests",
+        "apiUsd",
+        "planUsd",
+        "unpricedTokens"
+      ],
+      "additionalProperties": false
+    },
+    "AccountPoints": {
+      "description": "One account's points within a row.",
+      "type": "object",
+      "properties": {
+        "account": {
+          "type": "string"
+        },
+        "fiveHour": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "week": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      },
+      "required": [
+        "account",
+        "fiveHour",
+        "week"
+      ],
+      "additionalProperties": false
+    },
+    "Coverage": {
+      "description": "How much of the view is named, and since when limits are known.",
+      "type": "object",
+      "properties": {
+        "namedApiUsd": {
+          "type": "number",
+          "format": "double"
+        },
+        "totalApiUsd": {
+          "type": "number",
+          "format": "double"
+        },
+        "limitsSince": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "unassigned": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Unassigned"
+          }
+        }
+      },
+      "required": [
+        "namedApiUsd",
+        "totalApiUsd",
+        "limitsSince",
+        "unassigned"
+      ],
+      "additionalProperties": false
+    },
+    "Unassigned": {
+      "description": "Limit points no bound request explains.",
+      "type": "object",
+      "properties": {
+        "account": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "points": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "account",
+        "kind",
+        "points"
+      ],
+      "additionalProperties": false
+    },
+    "Facet": {
+      "description": "One value of a dimension and how many sessions have it.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "count"
+      ],
+      "additionalProperties": false
+    },
+    "Sources": {
+      "description": "Where the view's data came from and when.",
+      "type": "object",
+      "properties": {
+        "devices": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Device"
+          }
+        },
+        "proxySince": {
+          "description": "The earliest proxy receipt's time; the caller sets it (see `proxy_since`).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      },
+      "required": [
+        "devices",
+        "proxySince"
+      ],
+      "additionalProperties": false
+    },
+    "Device": {
+      "description": "A machine (or GitHub repository) whose records the store holds.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "default": ""
+        },
+        "label": {
+          "type": "string",
+          "default": ""
+        },
+        "syncedAt": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "default": null
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "syncedAt"
+      ],
+      "additionalProperties": false
+    },
+    "AgentSdkUsage": {
+      "description": "How much of the view ran on the Agent SDK or `claude -p`, which the five-hour\nmeter charges `factor` times more per token than interactive Claude Code.",
+      "type": "object",
+      "properties": {
+        "apiUsd": {
+          "type": "number",
+          "format": "double"
+        },
+        "share": {
+          "type": "number",
+          "format": "double"
+        },
+        "fiveHour": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "factor": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "apiUsd",
+        "share",
+        "fiveHour",
+        "factor"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
