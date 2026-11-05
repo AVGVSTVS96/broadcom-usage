@@ -1,0 +1,28 @@
+[package]
+name = "broadcom-usage"
+version = "0.1.0"
+edition = "2024"
+description = "Collects AI agent usage and answers BROADCOM's usage views"
+license = "MIT"
+repository = "https://github.com/AVGVSTVS96/broadcom-usage"
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+chrono = "0.4"
+chrono-tz = "0.10"
+flate2 = "1"
+notify = "8"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+sha2 = "0.10"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+debug = "line-tables-only"
