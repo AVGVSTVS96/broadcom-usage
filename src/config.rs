@@ -5,15 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Plan {
-    pub name: String,
-    pub providers: Vec<String>,
-    #[serde(rename = "monthlyUSD")]
-    pub monthly_usd: f64,
-    pub since: String,
-}
+use crate::views::{AgentSdk, ConfiguredPlan};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -30,8 +22,11 @@ pub struct Config {
     pub pool_dir: PathBuf,
     pub accounts_file: PathBuf,
     pub timezone: Option<String>,
-    pub plans: Vec<Plan>,
+    /// Subscriptions the pool can't read from an account profile, like ChatGPT Pro for Codex.
+    pub plans: Vec<ConfiguredPlan>,
+    /// How much more the five-hour meter charges these entrypoints per token than interactive use.
     pub agent_sdk_factor: f64,
+    pub agent_sdk_entrypoints: Vec<String>,
     pub hex: PathBuf,
     pub claude: PathBuf,
     /// While the Go proxy still keeps usage: its usage folder, whose journals are followed
@@ -39,7 +34,8 @@ pub struct Config {
     pub go_usage_dir: Option<PathBuf>,
     /// Per-request receipts a proxy appends, one record per line.
     pub receipts: Option<PathBuf>,
-    pub github_actions: bool,
+    /// Repositories whose GitHub Actions upload claude-usage artifacts (autofork's capture step).
+    pub github_repos: Vec<String>,
 }
 
 fn home() -> PathBuf {
@@ -66,12 +62,13 @@ impl Default for Config {
             accounts_file: home.join(".config/cliproxyapi/accounts.json"),
             timezone: None,
             plans: Vec::new(),
-            agent_sdk_factor: 1.7,
+            agent_sdk_factor: AgentSdk::default().factor,
+            agent_sdk_entrypoints: AgentSdk::default().entrypoints,
             hex: home.join("hex"),
             claude: home.join(".claude"),
             go_usage_dir: None,
             receipts: None,
-            github_actions: false,
+            github_repos: Vec::new(),
         }
     }
 }
@@ -95,6 +92,10 @@ impl Config {
             *p = expand(p);
         }
         Ok(config)
+    }
+
+    pub fn agent_sdk(&self) -> AgentSdk {
+        AgentSdk { factor: self.agent_sdk_factor, entrypoints: self.agent_sdk_entrypoints.clone() }
     }
 
     /// This machine's device id: configured, else saved in the state folder once.

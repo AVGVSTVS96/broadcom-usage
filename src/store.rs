@@ -86,8 +86,9 @@ CREATE INDEX IF NOT EXISTS events_proxy ON events (account_id, millis) WHERE sou
 ";
 
 /// Whether a transcript row's upstream response or request has a proxy receipt.
-const HAS_RECEIPT: &str = "EXISTS (SELECT 1 FROM events p WHERE p.source = 'proxy' AND p.harness = events.harness \
-    AND ((p.response_key = events.response_key) OR (p.request_key = events.request_key AND p.model = events.model)))";
+const HAS_RECEIPT: &str = "(EXISTS (SELECT 1 FROM events p WHERE p.source = 'proxy' AND p.harness = events.harness \
+    AND p.response_key = events.response_key) OR EXISTS (SELECT 1 FROM events p WHERE p.source = 'proxy' \
+    AND p.harness = events.harness AND p.request_key = events.request_key AND p.model = events.model))";
 
 const COLUMNS: &str = "source, response_id, upstream_request_id, account_id, failed, id, ts, harness, model, raw_model, \
     project, repository, session_id, input, output, cache_read, cache_write, unclassified, reasoning, cost_usd, \
@@ -265,7 +266,9 @@ impl Store {
                 proxies.push((e.harness, e.id));
             }
         }
+        tracing::info!("resolved {} records", proxies.len());
         tx.execute(&format!("UPDATE events SET hidden = {HAS_RECEIPT} WHERE source <> 'proxy'"), [])?;
+        tracing::info!("hid transcript records the proxy answered for");
         for (harness, id) in &proxies {
             resolver.reconcile(harness, id)?;
         }

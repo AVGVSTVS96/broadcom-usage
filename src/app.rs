@@ -1,26 +1,32 @@
-//! The running service: the store, its inputs, and the views over it.
+//! The running service: the store, what feeds it, and the deck over it, each following
+//! the real change that concerns it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use axum::extract::{Query, State};
-use axum::http::StatusCode;
+use axum::extract::{RawQuery, State};
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use notify::{RecursiveMode, Watcher};
+use serde::Serialize;
 use tokio::sync::mpsc;
 
 use crate::config::Config;
+use crate::deck::Deck;
 use crate::event::Device;
 use crate::follow::{self, Followed, Format};
+use crate::github::GitHub;
+use crate::pricing::Pricing;
 use crate::store::Store;
-use crate::stream::Stream;
+use crate::views::Range;
 
 pub struct App {
     pub config: Config,
     pub store: Arc<Store>,
-    pub stream: Stream,
+    pub pricing: Arc<Pricing>,
+    pub deck: Arc<Deck>,
     pub key: String,
 }
 
@@ -55,27 +61,153 @@ impl App {
     }
 }
 
-/// Catches up whenever a followed file changes: once the writes go quiet for a second,
-/// or five seconds into a steady stream.
-pub async fn follow_files(app: Arc<App>) {
-    let dirs: Vec<PathBuf> = app
-        .followed()
-        .iter()
-        .filter_map(|f| f.path.parent().map(|p| p.to_path_buf()))
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
+/// Starts everything that keeps the store and the deck current.
+pub fn start(app: Arc<App>) {
+    let deck = app.deck.clone();
+    tokio::spawn({
+        let store = app.store.clone();
+        app.pricing.clone().run(move |policy| {
+            let store = store.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = store.set_policy(policy) {
+                    tracing::warn!("repricing: {e:#}");
+                }
+            });
+        })
+    });
+    if app.config.go_usage_dir.is_none() && !app.config.github_repos.is_empty() {
+        let github = GitHub::new(&app.config.state_dir, app.config.github_repos.clone(), app.pricing.clone());
+        let store = app.store.clone();
+        tokio::spawn(github.run(move |batch| tokio::task::block_in_place(|| store.apply(&batch, true).map(|_| ()))));
+    }
+    tokio::spawn(follow_files(app.clone()));
+    tokio::spawn({
+        let deck = deck.clone();
+        let mut revision = app.store.subscribe();
+        async move {
+            while revision.changed().await.is_ok() {
+                tokio::time::sleep(Duration::from_secs(15)).await;
+                revision.mark_unchanged();
+                deck.usage_changed();
+            }
+        }
+    });
+    let pool = app.config.pool_dir.clone();
+    spawn_watch(vec![(pool.clone(), false), (pool.join("plans"), false)], Duration::from_secs(1), {
+        let deck = deck.clone();
+        move || {
+            deck.usage_changed();
+            deck.publish();
+        }
+    });
+    let claude = &app.config.claude;
+    let hex_state = app.config.hex.join("state");
+    spawn_watch(
+        vec![(claude.join("sessions"), false), (claude.join("jobs"), true), (hex_state, true)],
+        Duration::from_millis(250),
+        {
+            let deck = deck.clone();
+            move || {
+                deck.refresh_processes();
+                deck.publish();
+            }
+        },
+    );
+    tokio::spawn(follow_hex(deck.clone(), app.config.hex.join(".hex/bin/hex")));
+    tokio::spawn({
+        let deck = deck.clone();
+        async move {
+            let mut minute = tokio::time::interval(Duration::from_secs(60));
+            let mut beat = tokio::time::interval(Duration::from_secs(20));
+            let mut five = tokio::time::interval(Duration::from_secs(300));
+            loop {
+                tokio::select! {
+                    _ = minute.tick() => { deck.refresh_processes(); deck.publish(); }
+                    _ = beat.tick() => deck.stream.heartbeat(),
+                    _ = five.tick() => if deck.stream.listeners() > 0 { deck.usage_changed() },
+                }
+            }
+        }
+    });
+    tokio::spawn(async move {
+        let names = deck.clone();
+        let _ = tokio::task::spawn_blocking(move || names.refresh_names()).await;
+        deck.publish();
+        if let Err(e) = deck.warm(Range::Week).await {
+            tracing::warn!("loading 7d: {e:#}");
+        }
+    });
+}
+
+/// Calls `changed` once things go quiet for `wait` after a burst of changes under
+/// `paths` (each watched alone, or with its direct subfolders).
+fn spawn_watch(paths: Vec<(PathBuf, bool)>, wait: Duration, changed: impl Fn() + Send + 'static) {
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let mut watcher = match notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+    let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
         if event.is_ok_and(|e| !matches!(e.kind, notify::EventKind::Access(_))) {
             let _ = tx.send(());
         }
-    }) {
-        Ok(w) => w,
-        Err(e) => {
-            tracing::error!("watching followed files: {e}");
-            return;
+    });
+    let Ok(mut watcher) = watcher else { return };
+    for (path, children) in &paths {
+        let mode = if *children { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
+        if let Err(e) = watcher.watch(path, mode) {
+            tracing::debug!("watching {}: {e}", path.display());
         }
+    }
+    tokio::spawn(async move {
+        let _watcher = watcher;
+        while rx.recv().await.is_some() {
+            tokio::time::sleep(wait).await;
+            while rx.try_recv().is_ok() {}
+            changed();
+        }
+    });
+}
+
+/// Follows `hex watch`, which prints a line whenever a thread's name changes.
+async fn follow_hex(deck: Arc<Deck>, hex: PathBuf) {
+    use tokio::io::AsyncBufReadExt;
+    if !hex.exists() {
+        return;
+    }
+    loop {
+        let child = tokio::process::Command::new(&hex)
+            .arg("watch")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn();
+        if let Ok(mut child) = child {
+            if let Some(out) = child.stdout.take() {
+                let mut lines = tokio::io::BufReader::new(out).lines();
+                while let Ok(Some(_)) = lines.next_line().await {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    let names = deck.clone();
+                    let _ = tokio::task::spawn_blocking(move || names.refresh_names()).await;
+                    deck.publish();
+                    deck.stream.stale(&["usage"]);
+                }
+            }
+            let _ = child.wait().await;
+        }
+        tracing::warn!("hex watch exited; starting it again");
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+/// Catches up whenever a followed file changes: once the writes go quiet for a second,
+/// or five seconds into a steady stream.
+pub async fn follow_files(app: Arc<App>) {
+    let dirs: std::collections::BTreeSet<PathBuf> =
+        app.followed().iter().filter_map(|f| f.path.parent().map(Path::to_path_buf)).collect();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let Ok(mut watcher) = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        if event.is_ok_and(|e| !matches!(e.kind, notify::EventKind::Access(_))) {
+            let _ = tx.send(());
+        }
+    }) else {
+        return;
     };
     for dir in &dirs {
         if let Err(e) = watcher.watch(dir, RecursiveMode::NonRecursive) {
@@ -103,14 +235,25 @@ pub async fn follow_files(app: Arc<App>) {
     }
 }
 
-pub async fn usage(State(_app): State<Arc<App>>, Query(_q): Query<Vec<(String, String)>>) -> Response {
-    (StatusCode::SERVICE_UNAVAILABLE, "views not wired yet").into_response()
+fn reply<T: Serialize>(result: Result<T, String>) -> Response {
+    let headers = [(header::CACHE_CONTROL, "no-store")];
+    match result {
+        Ok(value) => (headers, axum::Json(value)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, headers, axum::Json(serde_json::json!({"error": e}))).into_response(),
+    }
 }
 
-pub async fn sessions(State(_app): State<Arc<App>>) -> Response {
-    (StatusCode::SERVICE_UNAVAILABLE, "views not wired yet").into_response()
+pub async fn usage(State(app): State<Arc<App>>, RawQuery(query): RawQuery) -> Response {
+    reply(app.deck.usage(query.as_deref().unwrap_or("")).await.map_err(|e| e.to_string()))
 }
 
-pub async fn credits(State(_app): State<Arc<App>>) -> Response {
-    (StatusCode::SERVICE_UNAVAILABLE, "views not wired yet").into_response()
+pub async fn sessions(State(app): State<Arc<App>>, RawQuery(query): RawQuery) -> Response {
+    let range = form_urlencoded::parse(query.unwrap_or_default().as_bytes())
+        .find(|(k, _)| k == "range")
+        .map_or(Range::Week, |(_, v)| Range::parse(&v));
+    reply(app.deck.sessions(range).await.map_err(|e| e.to_string()))
+}
+
+pub async fn credits(State(app): State<Arc<App>>) -> Response {
+    reply(app.deck.credits().await.as_ref().clone())
 }

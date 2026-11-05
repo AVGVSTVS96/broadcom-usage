@@ -2,7 +2,6 @@
 
 use std::convert::Infallible;
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::Router;
 use axum::body::{Body, Bytes};
@@ -76,19 +75,11 @@ async fn push(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes) -> R
 }
 
 async fn events(State(app): State<Arc<App>>) -> Response {
-    let frames = ReceiverStream::new(app.stream.subscribe()).map(|frame| Ok::<_, Infallible>(Bytes::from(frame)));
+    let frames = ReceiverStream::new(app.deck.stream.subscribe()).map(|frame| Ok::<_, Infallible>(Bytes::from(frame)));
     Response::builder()
         .header(header::CONTENT_TYPE, "text/event-stream")
         .header(header::CACHE_CONTROL, "no-cache")
         .header("X-Accel-Buffering", "no")
         .body(Body::from_stream(frames))
         .unwrap()
-}
-
-pub async fn heartbeat(app: Arc<App>) {
-    let mut tick = tokio::time::interval(Duration::from_secs(20));
-    loop {
-        tick.tick().await;
-        app.stream.heartbeat();
-    }
 }

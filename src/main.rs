@@ -9,7 +9,7 @@ use broadcom_usage::event::Device;
 use broadcom_usage::pricing::Pricing;
 use broadcom_usage::server;
 use broadcom_usage::store::Store;
-use broadcom_usage::stream::Stream;
+use broadcom_usage::deck::Deck;
 
 const USAGE: &str = "broadcom-usage [serve|dump <out.ndjson>] [--config <file.json>]";
 
@@ -41,7 +41,8 @@ fn open(config: Config) -> Result<App> {
     let local = Device { id: config.device_id()?, label: config.device_label(), synced_at: None };
     let store = Arc::new(Store::open(&config.state_dir.join("usage.db"), local, pricing.policy())?);
     let key = std::fs::read_to_string(&config.key_file).map(|k| k.trim().to_string()).unwrap_or_default();
-    Ok(App { config, store, stream: Stream::default(), key })
+    let deck = Arc::new(Deck::new(config.clone(), store.clone()));
+    Ok(App { config, store, pricing: Arc::new(pricing), deck, key })
 }
 
 /// Catches up on every input, then writes the resolved records, as Go's TestDumpStore does.
@@ -64,8 +65,7 @@ fn dump(app: &App, out: &str) -> Result<()> {
 
 #[tokio::main]
 async fn serve(app: Arc<App>) -> Result<()> {
-    tokio::spawn(app::follow_files(app.clone()));
-    tokio::spawn(server::heartbeat(app.clone()));
+    app::start(app.clone());
     let listener = tokio::net::TcpListener::bind(&app.config.listen).await?;
     tracing::info!("serving on {}", app.config.listen);
     axum::serve(listener, server::router(app)).await?;

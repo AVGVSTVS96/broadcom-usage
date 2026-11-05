@@ -1,6 +1,7 @@
 pub mod app;
 pub mod collect;
 pub mod config;
+pub mod deck;
 pub mod event;
 pub mod follow;
 pub mod github;
