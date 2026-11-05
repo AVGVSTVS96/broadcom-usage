@@ -15,7 +15,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use super::parse::Parsed;
 use super::t3::Metadata;
 
-const VERSION: i64 = 3;
+const VERSION: i64 = 4;
 
 /// A record id or session that ties files together, as a 64-bit FNV-1a hash. A collision
 /// only widens a pass to more files, which resends unchanged records.
@@ -114,9 +114,9 @@ pub fn files(db: &Connection) -> Result<HashMap<String, Cached>> {
 pub fn parsed(db: &Connection, id: i64) -> Result<Parsed> {
     let blob: Vec<u8> =
         db.query_row("SELECT blob FROM parsed WHERE file = ?", [id], |r| r.get(0))?;
-    let mut json = Vec::new();
-    DeflateDecoder::new(&blob[..]).read_to_end(&mut json)?;
-    Ok(serde_json::from_slice(&json)?)
+    let mut bytes = Vec::new();
+    DeflateDecoder::new(&blob[..]).read_to_end(&mut bytes)?;
+    Ok(postcard::from_bytes(&bytes)?)
 }
 
 pub fn links_of(tx: &Transaction, file: i64) -> Result<Vec<Link>> {
@@ -134,14 +134,14 @@ pub fn affected(tx: &Transaction, seeds: &HashSet<Link>) -> Result<HashSet<i64>>
         insert.execute([link])?;
     }
     let mut statement = tx.prepare_cached(
-        "WITH RECURSIVE reach (file) AS (
-             SELECT links.file FROM temp.seeds JOIN links ON links.link = seeds.link
+        "WITH RECURSIVE reach (file, link) AS (
+             SELECT NULL, link FROM temp.seeds
              UNION
-             SELECT next.file FROM reach
-                 JOIN links AS mine ON mine.file = reach.file
-                 JOIN links AS next ON next.link = mine.link
+             SELECT links.file, NULL FROM reach JOIN links ON links.link = reach.link
+             UNION
+             SELECT NULL, links.link FROM reach JOIN links ON links.file = reach.file
          )
-         SELECT file FROM reach",
+         SELECT file FROM reach WHERE file IS NOT NULL",
     )?;
     let files = statement.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
     tx.execute("DELETE FROM temp.seeds", [])?;
@@ -170,7 +170,7 @@ pub struct Entry {
 impl Entry {
     pub fn new(parsed: Parsed, resume: Option<Resume>) -> Result<Entry> {
         let mut encoder = DeflateEncoder::new(Vec::new(), Compression::fast());
-        encoder.write_all(&serde_json::to_vec(&parsed)?)?;
+        encoder.write_all(&postcard::to_stdvec(&parsed)?)?;
         let blob = encoder.finish()?;
         Ok(Entry {
             links: links(&parsed),

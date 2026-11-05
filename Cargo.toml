@@ -18,6 +18,7 @@ indexmap = { version = "2", features = ["serde"] }
 memchr = "2"
 mimalloc = "0.1"
 notify = "8"
+postcard = { version = "1", features = ["use-std"] }
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip"] }
 rusqlite = { version = "0.37", features = ["bundled"] }

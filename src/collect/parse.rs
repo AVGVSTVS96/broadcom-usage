@@ -8,10 +8,6 @@ use serde::{Deserialize, Serialize};
 use super::js::{J, iso_millis, js_number, json_array, parse_date, sha256_hex, valid_utf8};
 use super::json::{Read, Val, read_lines, valid};
 
-fn is_false(b: &bool) -> bool {
-    !*b
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Harness {
@@ -37,7 +33,6 @@ impl Harness {
 
 /// One usage record as its log states it, before attribution and pricing.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct Usage {
     pub id: String,
     pub timestamp: String,
@@ -45,21 +40,13 @@ pub struct Usage {
     pub model: String,
     pub project: String,
     pub session_id: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
     pub entrypoint: String,
-    #[serde(skip_serializing_if = "is_zero")]
     pub input_tokens: i64,
-    #[serde(skip_serializing_if = "is_zero")]
     pub output_tokens: i64,
-    #[serde(skip_serializing_if = "is_zero")]
     pub cache_read_tokens: i64,
-    #[serde(skip_serializing_if = "is_zero")]
     pub cache_write_tokens: i64,
-    #[serde(skip_serializing_if = "is_zero")]
     pub reasoning_tokens: i64,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub reported_cost_usd: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub requests: Option<i64>,
 }
 
@@ -71,26 +58,14 @@ impl Usage {
 
 /// One parsed usage record before cross-file deduplication.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct Candidate {
-    #[serde(rename = "u")]
     pub usage: Usage,
-    #[serde(rename = "s", skip_serializing_if = "is_false")]
     pub sidechain: bool,
-    #[serde(rename = "w", skip_serializing_if = "is_zero")]
     pub cache_write_1h: i64,
-    #[serde(rename = "t", skip_serializing_if = "String::is_empty")]
     pub tier: String,
-    #[serde(rename = "n", skip_serializing_if = "String::is_empty")]
     pub native_message_id: String,
-    #[serde(rename = "p", skip_serializing_if = "String::is_empty")]
     pub parent_event_id: String,
-    #[serde(rename = "l", skip_serializing_if = "String::is_empty")]
     pub legacy_event_id: String,
-}
-
-fn is_zero(n: &i64) -> bool {
-    *n == 0
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -103,25 +78,16 @@ pub struct EmptyRequest {
 /// Everything deduplication needs from one log, and nothing else: prompts and replies
 /// are dropped as each record is read.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct Parsed {
     pub events: Vec<Candidate>,
     pub malformed: usize,
-    #[serde(skip_serializing_if = "String::is_empty")]
     pub session_id: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
     pub parent_id: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
     pub forked_at: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
     pub workspace_root: String,
-    #[serde(skip_serializing_if = "HashSet::is_empty")]
     pub compaction_ids: HashSet<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub retracted_ids: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub empty_claude_requests: Vec<EmptyRequest>,
-    #[serde(skip_serializing_if = "String::is_empty")]
     pub session_title: String,
 }
 
