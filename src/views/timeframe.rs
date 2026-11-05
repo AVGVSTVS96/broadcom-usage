@@ -307,9 +307,18 @@ pub fn provider(model: &str) -> &'static str {
 /// JavaScript's localeCompare sorts before letters.
 const ASCII_ORDER: &str = " _-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$0123456789";
 
+/// Each ASCII character's place in ASCII_ORDER, u32::MAX for the rest.
+static ASCII_RANK: std::sync::LazyLock<[u32; 128]> = std::sync::LazyLock::new(|| {
+    let mut rank = [u32::MAX; 128];
+    for (i, c) in ASCII_ORDER.bytes().enumerate() {
+        rank[c as usize] = i as u32;
+    }
+    rank
+});
+
 fn primary(c: char) -> u32 {
-    if let Some(i) = ASCII_ORDER.find(c) {
-        return i as u32;
+    if let Some(&i) = ASCII_RANK.get(c as usize).filter(|&&i| i != u32::MAX) {
+        return i;
     }
     let base = ASCII_ORDER.len() as u32;
     if c.is_ascii_alphabetic() {

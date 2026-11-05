@@ -93,6 +93,23 @@ const HAS_RECEIPT: &str = "(EXISTS (SELECT 1 FROM events p WHERE p.source = 'pro
     WHERE p.source = 'proxy' AND p.gone = 0 AND p.harness = events.harness AND p.request_key = events.request_key \
     AND p.model = events.model))";
 
+static UPSERT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    format!(
+        "INSERT INTO events ({COLUMNS}, millis, response_key, request_key, hidden, gone, rev) VALUES \
+         (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, \
+          ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, 0, 0, ?35) ON CONFLICT (harness, id) DO UPDATE SET {}, \
+          millis = excluded.millis, response_key = excluded.response_key, request_key = excluded.request_key, \
+          hidden = 0, gone = 0, rev = excluded.rev",
+        COLUMNS.split(", ").map(|c| format!("{c} = excluded.{c}")).collect::<Vec<_>>().join(", ")
+    )
+});
+
+/// Rewrites a resolved row's record fields in place: `?32` harness, `?33` id, `?34` revision.
+static REWRITE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    let assignments: Vec<String> = COLUMNS.split(", ").enumerate().map(|(i, c)| format!("{c} = ?{}", i + 1)).collect();
+    format!("UPDATE events SET {}, rev = ?34 WHERE harness = ?32 AND id = ?33", assignments.join(", "))
+});
+
 /// A row the views count.
 const VISIBLE: &str = "hidden = 0 AND gone = 0";
 
@@ -586,20 +603,21 @@ impl<'a> Resolver<'a> {
             }
         }
         for (harness, key, model) in &identities {
-            let (column, model_clause) = if model.is_some() { ("request_key", " AND model = ?3") } else { ("response_key", "") };
-            let args: Vec<&dyn rusqlite::ToSql> = match model {
-                Some(m) => vec![harness, key, m],
-                None => vec![harness, key],
+            let (filter, args): (&str, Vec<&dyn rusqlite::ToSql>) = match model {
+                Some(m) => ("request_key = ?2 AND model = ?3", vec![harness, key, m]),
+                None => ("response_key = ?2", vec![harness, key]),
             };
+            let rev = format!("?{}", args.len() + 1);
+            let mut flip_args = args.clone();
+            flip_args.push(&self.rev);
             self.tx
                 .prepare_cached(&format!(
-                    "UPDATE events SET hidden = 1 - hidden, rev = {} WHERE source <> 'proxy' AND harness = ?1 \
-                     AND {column} = ?2{model_clause} AND hidden <> {HAS_RECEIPT}",
-                    self.rev
+                    "UPDATE events SET hidden = 1 - hidden, rev = {rev} WHERE source <> 'proxy' AND harness = ?1 \
+                     AND {filter} AND hidden <> {HAS_RECEIPT}"
                 ))?
-                .execute(args.as_slice())?;
+                .execute(flip_args.as_slice())?;
             self.collect(
-                &format!("SELECT harness, id FROM events WHERE source = 'proxy' AND gone = 0 AND harness = ?1 AND {column} = ?2{model_clause}"),
+                &format!("SELECT harness, id FROM events WHERE source = 'proxy' AND gone = 0 AND harness = ?1 AND {filter}"),
                 args.as_slice(),
                 &mut proxies,
             )?;
@@ -664,14 +682,7 @@ impl<'a> Resolver<'a> {
 
     fn insert(&self, e: &Event) -> Result<()> {
         let priced = self.policy.reprice(e).unwrap_or_else(|| e.clone());
-        self.tx.prepare_cached(&format!(
-            "INSERT INTO events ({COLUMNS}, millis, response_key, request_key, hidden, gone, rev) VALUES \
-             (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, \
-              ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, 0, 0, ?35) ON CONFLICT (harness, id) DO UPDATE SET {}, \
-              millis = excluded.millis, response_key = excluded.response_key, request_key = excluded.request_key, \
-              hidden = 0, gone = 0, rev = excluded.rev",
-            COLUMNS.split(", ").map(|c| format!("{c} = excluded.{c}")).collect::<Vec<_>>().join(", ")
-        ))?
+        self.tx.prepare_cached(&UPSERT)?
         .execute(rusqlite::params_from_iter(event_values(&priced).into_iter().chain([
             millis_of(&priced.timestamp).map_or(rusqlite::types::Value::Null, rusqlite::types::Value::Integer),
             opt(response_identity(e)),
@@ -729,11 +740,7 @@ impl<'a> Resolver<'a> {
         values.push(rusqlite::types::Value::Text(harness.to_string()));
         values.push(rusqlite::types::Value::Text(id.to_string()));
         values.push(rusqlite::types::Value::Integer(self.rev));
-        let assignments: Vec<String> =
-            COLUMNS.split(", ").enumerate().map(|(i, c)| format!("{c} = ?{}", i + 1)).collect();
-        self.tx
-            .prepare_cached(&format!("UPDATE events SET {}, rev = ?34 WHERE harness = ?32 AND id = ?33", assignments.join(", ")))?
-            .execute(rusqlite::params_from_iter(values))?;
+        self.tx.prepare_cached(&REWRITE)?.execute(rusqlite::params_from_iter(values))?;
         Ok(())
     }
 }

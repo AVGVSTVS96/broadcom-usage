@@ -3,7 +3,6 @@
 //! query over it is answered from that and cached.
 
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -27,7 +26,6 @@ const MAX_VIEWS: usize = 64;
 #[derive(Default)]
 struct RangeCache {
     value: Option<Arc<SessionUsage>>,
-    news: u64,
     at: Option<Instant>,
     viewed: Option<Instant>,
     views: HashMap<String, Arc<UsageView>>,
@@ -43,54 +41,42 @@ struct Rows {
     rev: Option<i64>,
 }
 
+/// Past this many changed rows a refresh reads every row again rather than shifting.
+const REREAD_OVER: usize = 2_000;
+
 impl Rows {
     fn sync(&mut self, store: &Store) -> Result<()> {
         let (changes, latest) = store.rows_after(self.rev.unwrap_or(-1))?;
-        let first = self.rev.is_none();
+        if self.rev.is_some() && changes.len() > REREAD_OVER {
+            *self = Rows::default();
+            return self.sync(store);
+        }
         self.rev = Some(latest);
-        let mut dropped = vec![false; self.rows.len()];
-        let mut added = Vec::new();
         for (id, visible, row) in changes {
-            match self.at.get(&id) {
-                Some(&i) if visible && self.rows[i].millis == row.millis => self.rows[i] = row,
-                Some(&i) => {
-                    dropped[i] = true;
-                    if visible {
-                        added.push((id, row));
-                    }
+            if let Some(&i) = self.at.get(&id) {
+                if visible && self.rows[i].millis == row.millis {
+                    self.rows[i] = row;
+                    continue;
                 }
-                None if visible => added.push((id, row)),
-                None => {}
+                self.rows.remove(i);
+                self.ids.remove(i);
+                self.at.remove(&id);
+                self.reindex(i);
+            }
+            if visible {
+                let i = self.rows.partition_point(|r| r.millis <= row.millis);
+                self.rows.insert(i, row);
+                self.ids.insert(i, id);
+                self.reindex(i);
             }
         }
-        if !first {
-            added.sort_by(|a, b| a.1.millis.total_cmp(&b.1.millis));
-        }
-        let tail = self.rows.last().map_or(f64::NEG_INFINITY, |r| r.millis);
-        if first || (!dropped.contains(&true) && added.first().is_none_or(|(_, r)| r.millis >= tail)) {
-            for (id, row) in added {
-                self.at.insert(id, self.rows.len());
-                self.ids.push(id);
-                self.rows.push(row);
-            }
-            return Ok(());
-        }
-        let old = std::mem::take(&mut self.rows).into_iter().zip(std::mem::take(&mut self.ids)).zip(dropped);
-        let mut old = old.filter(|(_, gone)| !gone).map(|(kept, _)| kept).peekable();
-        let mut added = added.into_iter().map(|(id, row)| (row, id)).peekable();
-        loop {
-            let take_old = match (old.peek(), added.peek()) {
-                (Some(o), Some(a)) => o.0.millis <= a.0.millis,
-                (Some(_), None) => true,
-                (None, Some(_)) => false,
-                (None, None) => break,
-            };
-            let (row, id) = if take_old { old.next() } else { added.next() }.expect("peeked");
-            self.rows.push(row);
-            self.ids.push(id);
-        }
-        self.at = self.ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
         Ok(())
+    }
+
+    fn reindex(&mut self, from: usize) {
+        for (i, &id) in self.ids.iter().enumerate().skip(from) {
+            self.at.insert(id, i);
+        }
     }
 
     /// The rows from `since` (unix ms) on.
@@ -121,12 +107,6 @@ pub struct Deck {
     bindings: Mutex<AppendLog<Binding>>,
     loader: tokio::sync::Mutex<()>,
     past: Mutex<Option<Past>>,
-}
-
-fn hash_json<T: serde::Serialize>(value: &T) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    serde_json::to_vec(value).unwrap_or_default().hash(&mut h);
-    h.finish()
 }
 
 /// The machine's IANA zone, as Go's deck finds it.
@@ -160,10 +140,6 @@ impl Deck {
         }
     }
 
-    fn readings(&self) -> Vec<LimitReading> {
-        self.readings.lock().unwrap().read().0.to_vec()
-    }
-
     fn bindings(&self) -> Vec<Binding> {
         self.bindings.lock().unwrap().read().0.to_vec()
     }
@@ -171,18 +147,19 @@ impl Deck {
     /// Computes these ranges' session usage from one read of the span they need.
     fn load(&self, ranges: &[Range]) -> Result<Vec<SessionUsage>> {
         let now = now_millis();
-        let readings = self.readings();
-        let bindings = self.bindings();
+        let mut readings = self.readings.lock().unwrap();
+        let mut bindings = self.bindings.lock().unwrap();
+        let (readings, bindings) = (readings.read().0, bindings.read().0);
         let from = ranges
             .iter()
-            .map(|&r| views::reads_from(r, self.zone, now, &readings).min(views::pricing_from(r, self.zone, now)))
+            .map(|&r| views::reads_from(r, self.zone, now, readings).min(views::pricing_from(r, self.zone, now)))
             .fold(f64::INFINITY, f64::min);
         let mut rows = self.rows.lock().unwrap();
         rows.sync(&self.store)?;
         let prepared = views::prepare(rows.since(from));
         let plans = views::read_plans(Some(&self.config.accounts_file), Some(&self.config.pool_dir), &self.config.plans);
         let pricing = PlanPricing::new(&plans, &prepared, self.zone, now);
-        let limits = LimitInputs::new(&readings, &bindings, self.config.agent_sdk());
+        let limits = LimitInputs::new(readings, bindings, self.config.agent_sdk());
         let devices = self.store.devices()?;
         Ok(ranges
             .iter()
@@ -210,13 +187,14 @@ impl Deck {
         let values = tokio::task::spawn_blocking(move || deck.load(&loading)).await??;
         let mut stale = false;
         for (r, value) in ranges.into_iter().zip(values) {
-            let news = hash_json(&(&value.sessions, &value.windows));
             let changed = {
                 let mut state = self.state.lock().unwrap();
                 let cache = state.ranges.entry(r).or_default();
-                let changed = cache.news != news;
+                let changed = cache
+                    .value
+                    .as_ref()
+                    .is_none_or(|old| old.sessions != value.sessions || old.windows != value.windows);
                 cache.value = Some(Arc::new(value));
-                cache.news = news;
                 cache.at = Some(Instant::now());
                 if changed {
                     cache.views.clear();
@@ -330,7 +308,7 @@ impl Deck {
         .unwrap_or_else(|e| Err(e.to_string()));
         let view = Arc::new(view);
         let previous = self.state.lock().unwrap().credits.replace(view.clone());
-        if previous.is_none_or(|p| hash_json(&p.as_ref().as_ref().ok()) != hash_json(&view.as_ref().as_ref().ok())) {
+        if previous.is_none_or(|p| p != view) {
             self.stream.stale(&["credits"]);
         }
         view
