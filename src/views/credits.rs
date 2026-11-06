@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use super::timeframe::parse_millis;
 use crate::event::Event;
 
-/// A grant and its last balance read off Console, which no API key can query.
+/// A free-credit grant (like the monthly API credit a Max or Ultra plan includes, which costs
+/// nothing, unlike paid extra usage) and its last balance read off Console, which no API key can query.
 /// Operators keep these non-secret observations in the pool state folder (credits.json).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", default)]
